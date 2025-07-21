@@ -185,14 +185,14 @@ def evaluate_model(args):
 
     if all_noise_levels:
         n_level = np.concatenate(all_noise_levels)
-        segs = [0.2, 0.6, 1.0, 1.5, 2.0]
-        # segs = [-6, 0, 6, 12, 18]
+        # segs = [0.2, 0.6, 1.0, 1.5, 2.0]
+        segs = [-6, 0, 6, 12, 18]
         segmented_results = {}
         
         for name in all_metrics:
             segmented_results[name] = {}
             for idx_seg in range(len(segs) - 1):
-                seg_label = f"{segs[idx_seg]}-{segs[idx_seg+1]}"
+                seg_label = f"{segs[idx_seg]}-{segs[idx_seg+1]}dB"
                 idx = np.where(np.logical_and(n_level >= segs[idx_seg], n_level <= segs[idx_seg + 1]))[0]
                 
                 if len(idx) == 0:
@@ -214,7 +214,7 @@ def evaluate_model(args):
         writer.writerow([])
 
         if all_noise_levels:
-            seg_labels = [f"{segs[i]}-{segs[i+1]}" for i in range(len(segs)-1)]
+            seg_labels = [f"{segs[i]}-{segs[i+1]}dB" for i in range(len(segs)-1)]
             writer.writerow(["Metrics"] + seg_labels)
             
             for metric in ["SSD", "MAD", "PRD", "COS_SIM", "SNR out", "ImSNR"]:
