@@ -66,16 +66,17 @@ class CFM(nn.Module):
         if use_ode:
             trajectory = odeint(fn, y0, t,** self.odeint_kwargs)
         else:
-            trajectory = self._iterative_sample(fn, y0, t, steps)
+            trajectory = self._iterative_sample(fn, y0, t, steps, cond)
 
         sampled = trajectory[-1]
         out = sampled
 
         return out, trajectory
 
-    def _iterative_sample(self, fn, y0, t, steps):
+    def _iterative_sample(self, fn, y0, t, steps, cond):
         dt = t[1] - t[0]
-        trajectory = [y0]
+        # trajectory = [y0]
+        trajectory = [cond]
         x = y0
         method = self.odeint_kwargs.get("method", "euler")
         

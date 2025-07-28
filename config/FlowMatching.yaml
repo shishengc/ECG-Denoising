@@ -11,7 +11,7 @@ train:
 
   optimizer:
     type: "AdamW"
-    lr: 7.5e-6
+    lr: 1.0e-5
     weight_decay: 0.
 
 base_model:

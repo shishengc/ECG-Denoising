@@ -122,6 +122,7 @@ def evaluate_model(args):
             model.eval()
 
             y_pred = []
+            trajectory = []
             print(f"Evaluating {args.exp_name} model for noise type {n_type}...")
             with torch.no_grad():
                 for clean_batch, noisy_batch in tqdm(test_loader):
@@ -137,6 +138,7 @@ def evaluate_model(args):
                             denoised_batch = denoised_batch / shots
                         else:
                             denoised_batch = model.denoise(noisy_batch)
+                            
                     elif args.exp_name == "EDDM":
                         shots = args.shots
                         if shots > 1:
@@ -147,20 +149,33 @@ def evaluate_model(args):
                             denoised_batch = denoised_batch / shots
                         else:
                             [_, denoised_batch] = model.sample([noisy_batch, 0], batch_size=noisy_batch.shape[0])
+                            
                     elif args.exp_name == "FlowMatching":
-
-                        [denoised_batch, _] = model.sample(noisy_batch)
+                        shots = args.shots
+                        if shots > 1:
+                            denoised_batch = 0
+                            for _ in range(shots):
+                                [denoised, _] = model.sample(noisy_batch)
+                                denoised_batch += denoised
+                            denoised_batch = denoised_batch / shots
+                        else:
+                            [denoised_batch, denoised_trajectory] = model.sample(noisy_batch)
+                        
                     elif args.exp_name == "ECG_GAN":
                         batch_size = noisy_batch.shape[0]
                         z = torch.randn(batch_size, 512, 8).to(args.device)
                         denoised_batch = model(noisy_batch, z)
+                        
                     else:
                         denoised_batch = model(noisy_batch)
                     
                     y_pred.append(denoised_batch.cpu().numpy())
+                    trajectory.append(denoised_trajectory.cpu().numpy().transpose(1, 0, 2, 3))
             
             y_pred = np.concatenate(y_pred, axis=0)
             y_pred = np.transpose(y_pred, (0, 2, 1))
+            trajectory = np.concatenate(trajectory, axis=0)
+            np.save(f"results/{args.exp_name}_trajectory_{n_type}.npy", trajectory)
 
         metrics = {
             "SSD": SSD(y_test, y_pred),
