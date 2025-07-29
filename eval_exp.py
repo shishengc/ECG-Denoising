@@ -160,6 +160,7 @@ def evaluate_model(args):
                             denoised_batch = denoised_batch / shots
                         else:
                             [denoised_batch, denoised_trajectory] = model.sample(noisy_batch)
+                            denoised_trajectory = torch.cat((denoised_trajectory, clean_batch.unsqueeze(0)), dim=0)
                         
                     elif args.exp_name == "ECG_GAN":
                         batch_size = noisy_batch.shape[0]
@@ -259,9 +260,9 @@ if __name__ == "__main__":
         "TCDAE",
         "DeepFilter",
         "ECG_GAN",
-    ], default="DeepFilter", help="Experiment name")
+    ], default="FlowMatching", help="Experiment name")
     parser.add_argument('--device', default='cuda:0' if torch.cuda.is_available() else 'cpu', help='Device')
-    parser.add_argument('--use_rmn', type=bool, default=False, help='Use Random Mixed Noise')
+    parser.add_argument('--use_rmn', type=bool, default=True, help='Use Random Mixed Noise')
     parser.add_argument('--shots', type=int, default=1, help='Number of shots for Diffusion model')
     
     args = parser.parse_args()

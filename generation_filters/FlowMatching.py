@@ -15,11 +15,12 @@ class CFM(nn.Module):
     def __init__(
         self,
         base_model: nn.Module,
-        sigma=0.0,
+        sigma=1.75,
         odeint_kwargs: dict = dict(method="euler"),
         num_channels=None,
         sampling_timesteps: int = 10,
-        default_use_ode: bool = True
+        default_use_ode: bool = True,
+        loss_type: str = "mean"
     ):
         super().__init__()
         self.num_channels = num_channels
@@ -29,10 +30,22 @@ class CFM(nn.Module):
         self.odeint_kwargs = odeint_kwargs
         self.sampling_timesteps = sampling_timesteps
         self.default_use_ode = default_use_ode
+        self.loss_type = loss_type
 
     @property
     def device(self):
         return next(self.parameters()).device
+    
+    @property
+    def loss_weight(self, t: torch.Tensor) -> torch.Tensor:
+        """
+        Calculate the loss weight based on the cosine function.
+        The weight is positive and decreases as t approaches 1.
+        """
+        if self.loss_type == "adaptive":
+            return torch.pow(torch.cos(torch.pi / 2 * (t - 3)), self.sigma).to(self.device)
+        elif self.loss_type == "mean":
+            return torch.ones_like(t).to(self.device)
 
     @torch.no_grad()
     def sample(
@@ -111,6 +124,7 @@ class CFM(nn.Module):
         )
 
         loss = F.mse_loss(pred, flow, reduction="none")
+        loss = loss.mean(dim=2).squeeze(1) * self.loss_weight(time)
         return loss.mean(), cond, pred
     
 

@@ -31,7 +31,7 @@ if __name__ == "__main__":
         ""
     ], default="FlowMatching", help="Experiment name")
     parser.add_argument('--device', default='cuda:0' if torch.cuda.is_available() else 'cpu', help='Device')
-    parser.add_argument('--use_rmn', type=bool, default=False, help='Add Random Mixed Noise')
+    parser.add_argument('--use_rmn', type=bool, default=True, help='Add Random Mixed Noise')
     parser.add_argument('--n_type', type=int, default=1, help='noise version')
     
     parser.add_argument('--val_interval', type=int, default=1)
