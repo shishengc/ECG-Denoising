@@ -35,8 +35,7 @@ class CFM(nn.Module):
     @property
     def device(self):
         return next(self.parameters()).device
-    
-    @property
+
     def loss_weight(self, t: torch.Tensor) -> torch.Tensor:
         """
         Calculate the loss weight based on the cosine function.
@@ -69,7 +68,7 @@ class CFM(nn.Module):
         def fn(t, x):
             nonlocal cond
             x = torch.cat((x, cond), dim=1) if exists(cond) else x
-            return self.base_model(x=x, time=t.expand(x.shape[0]))
+            return self.base_model(x=x, time=t.expand(x.shape[0]), x_self_cond=cond)
         
         y0 = torch.randn_like(cond)
         # y0 = cond
@@ -120,11 +119,11 @@ class CFM(nn.Module):
 
         φ = torch.cat((φ, cond), dim=1) if exists(cond) else φ
         pred = self.base_model(
-            x=φ, time=time
+            x=φ, time=time, x_self_cond=cond
         )
 
         loss = F.mse_loss(pred, flow, reduction="none")
-        loss = loss.mean(dim=2).squeeze(1) * self.loss_weight(time)
+        loss = loss.mean(dim=2).squeeze(1) * self.loss_weight(t=time)
         return loss.mean(), cond, pred
     
 

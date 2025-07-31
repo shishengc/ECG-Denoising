@@ -106,7 +106,7 @@ def FIR_test_Dataset(Dataset, num_processes=None):
     ## parameters
     Fs = 360
     Fc_l = 0.67
-    Fc_h = 150.0
+    Fc_h = 40.0
 
     # Determine number of processes to use
     if num_processes is None:

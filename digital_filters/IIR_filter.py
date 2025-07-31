@@ -77,8 +77,7 @@ def IIR_test_Dataset(Dataset):
     ## parameters
     Fs = 360
     Fc_l = 0.67
-    Fc_h = 150.0
-    # Fc_h = 40.0
+    Fc_h = 40.0
 
     y_filter_out = []
 

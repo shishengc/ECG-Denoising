@@ -8,6 +8,89 @@ import math
 from einops import rearrange, reduce
 from .utils import exists, default
 
+import numpy as np
+from scipy.signal import butter, filtfilt
+
+class ChannelAttention(nn.Module):
+    def __init__(self, in_ch, ratio=16):
+        super(ChannelAttention, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool1d(1)
+        self.max_pool = nn.AdaptiveMaxPool1d(1)
+
+        self.fc1 = nn.Conv1d(in_ch, in_ch // ratio, 1, bias=False)
+        self.relu1 = nn.ReLU()
+        self.fc2 = nn.Conv1d(in_ch // ratio, in_ch, 1, bias=False)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        avg_out = self.fc2(self.relu1(self.fc1(self.avg_pool(x))))
+        max_out = self.fc2(self.relu1(self.fc1(self.max_pool(x))))
+        out = avg_out + max_out
+        return self.sigmoid(out)
+
+
+class SpatialAttention(nn.Module):
+    def __init__(self, kernel_size=7):
+        super(SpatialAttention, self).__init__()
+
+        padding = 3 if kernel_size == 7 else 1
+
+        self.conv1 = nn.Conv1d(2, 1, kernel_size, padding=padding, bias=False)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        avg_out = torch.mean(x, dim=1, keepdim=True)
+        max_out, _ = torch.max(x, dim=1, keepdim=True)
+        x = torch.cat([avg_out, max_out], dim=1)
+        x = self.conv1(x)
+        return self.sigmoid(x)
+
+
+class CBAM(nn.Module):
+    def __init__(self, in_ch, ratio=16, kernel_size=7):
+        super(CBAM, self).__init__()
+        self.ca = ChannelAttention(in_ch, ratio)
+        self.sa = SpatialAttention(kernel_size)
+
+    def forward(self, x):
+        attn_ca = self.ca(x)
+        out = x * attn_ca
+        attn_sa = self.sa(out)
+        result = out * attn_sa
+        return result
+
+def IIR_filter_tensor(tensor, Fs=360, Fc_l=0.67, Fc_h=40.0):
+    B, C, L = tensor.shape
+    device = tensor.device
+    
+    tensor_np = tensor.cpu().numpy()
+    filtered_tensor = np.zeros_like(tensor_np)
+    
+    N = 4
+    Wn_l = Fc_l / (Fs / 2)
+    Wn_h = Fc_h / (Fs / 2)
+    b_hp, a_hp = butter(N, Wn_l, 'highpass', analog=False)
+    b_lp, a_lp = butter(N, Wn_h, 'lowpass', analog=False)
+    
+    for b in range(B):
+        for c in range(C):
+            signal = tensor_np[b, c, :].tolist()
+            
+            if N * 3 > L:
+                diff = N * 3 - L
+                padded_signal = list(reversed(signal)) + signal + [signal[-1]] * diff
+                filtered_hp = filtfilt(b_hp, a_hp, padded_signal)
+                filtered_hp = filtered_hp[L:2*L]
+                filtered_lp = filtfilt(b_lp, a_lp, padded_signal)
+                filtered_signal = filtered_lp[L:2*L]
+            else:
+                filtered_hp = filtfilt(b_hp, a_hp, signal)
+                filtered_signal = filtfilt(b_lp, a_lp, filtered_hp)
+            
+            filtered_tensor[b, c, :] = filtered_signal
+    
+    return torch.tensor(filtered_tensor, dtype=tensor.dtype, device=device)
+
 class DAPPM(nn.Module):
     
     """ following @ydhongHIT 's Deep Aggregation Pyramid Pooling Module(DAPPM) """
@@ -184,9 +267,9 @@ class RandomOrLearnedSinusoidalPosEmb(nn.Module):
     def forward(self, x):
         x = rearrange(x, 'b -> b 1')
         freqs = x * rearrange(self.weights, 'd -> 1 d') * 2 * math.pi
-        fouriered = torch.cat((freqs.sin(), freqs.cos()), dim=-1)
-        fouriered = torch.cat((x, fouriered), dim=-1)
-        return fouriered
+        fourieref = torch.cat((freqs.sin(), freqs.cos()), dim=-1)
+        fourieref = torch.cat((x, fourieref), dim=-1)
+        return fourieref
 
 # building block modules
 
@@ -263,6 +346,51 @@ class Attention(nn.Module):
         out = rearrange(out, 'b h l d -> b (h d) l')
         
         return self.to_out(out)
+
+
+class CrossAttention(nn.Module):
+    def __init__(self,*, dim, heads=6, dim_head=32, context_dim=None, dropout=0., prenorm=True):
+        super().__init__()
+        context_dim = default(context_dim, dim)
+
+        self.norm = nn.LayerNorm(dim) if prenorm else nn.Identity()
+        self.ref_norm = nn.LayerNorm(context_dim) if prenorm else nn.Identity()
+        
+        self.heads = heads
+        self.scale = dim_head ** -0.5
+        inner_dim = dim_head * heads
+
+        self.dropout = nn.Dropout(dropout)
+
+        self.to_q = nn.Linear(dim, inner_dim, bias=False)
+        self.to_k = nn.Linear(context_dim, inner_dim, bias=False)
+        self.to_v = nn.Linear(context_dim, inner_dim, bias=False)
+        
+        self.to_out = nn.Linear(inner_dim, dim)
+
+    def forward(self, x, ref=None):
+        h = self.heads
+        x = x.transpose(1, 2)
+        ref = ref.transpose(1, 2)
+
+        x = self.norm(x)
+        ref = self.ref_norm(ref)
+        k = self.to_k(ref) 
+        v = self.to_v(ref) 
+
+        q = self.to_q(x)  
+        
+        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h=h), (q, k, v)) 
+        sim = einsum('b h i d, b h j d -> b h i j', q, k) * self.scale 
+        attn = sim.softmax(dim=-1)
+
+        attn = self.dropout(attn)
+
+        out = einsum('b h i j, b h j d -> b h i d', attn, v)
+        out = rearrange(out, 'b h n d -> b n (h d)')
+        out = self.to_out(out)
+
+        return out.transpose(1, 2)
 
 
 class Unet(nn.Module):
@@ -351,7 +479,8 @@ class Unet(nn.Module):
         default_out_dim = channels * (1 if not learned_variance else 2)
         self.out_dim = default(out_dim, default_out_dim)
 
-        self.dapp = DAPPM(dim, dim * 2, dim)
+        # self.dapp = DAPPM(dim, dim * 2, dim)
+        self.ref_attn = CrossAttention(dim=init_dim, context_dim=1)
         self.final_res_block = block_klass(dim * 2, dim, time_emb_dim=time_dim)
         self.final_conv = nn.Conv1d(dim, self.out_dim, 1)
 
@@ -384,7 +513,7 @@ class Unet(nn.Module):
 
             x = upsample(x)
 
-        x = torch.cat((x, self.dapp(s)), dim=1)
+        x = torch.cat((x, self.ref_attn(s, x_self_cond)), dim=1)
 
         x = self.final_res_block(x, t)
         return self.final_conv(x)

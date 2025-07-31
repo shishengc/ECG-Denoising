@@ -1,43 +1,57 @@
 import argparse
 import torch
 import numpy as np
-import pandas as pd
 import yaml
 import os
-import csv
 from pathlib import Path
 from tqdm import tqdm
+import pickle
 
-from data_preparation import Data_Preparation, Data_Preparation_RMN
-from utils.metrics import SSD, MAD, PRD, COS_SIM, SNR, SNR_improvement
 from torch.utils.data import DataLoader, TensorDataset
 
 def evaluate_model(args):
-    os.makedirs("results", exist_ok=True)
-    
-    all_metrics = {}
-    all_noise_levels = []
-    
+    os.makedirs(f"results/{args.exp_name}", exist_ok=True)
+
     for n_type in [1, 2]:
         # Load Data
-        [_, _, X_test, y_test] = Data_Preparation(n_type) if not args.use_rmn else Data_Preparation_RMN(n_type)
-        
-        try:
-            noise_level = np.load('./Data/prepared/rnd_test.npy')
-            all_noise_levels.append(noise_level)
-        except FileNotFoundError:
-            print(f"Warning: rnd_test.npy not found for noise type {n_type}")
+
+        with open('./SimEMG_LowSNR_Paired_Processed/SimEMG_LowSNR_Paired_QTMethod.pkl', 'rb') as f:
+            processed_signal = pickle.load(f)
+            
+        clean_signal = processed_signal['clean']
+        noised_signal = processed_signal['noisy']
+
+        clean = []
+        noised = []
+
+        for items in clean_signal.values():
+            for beat in items:
+                clean.append(beat / 200)
+        for items in noised_signal.values():
+            for beat in items:
+                noised.append(beat / 200)
+            
+        y_test = np.expand_dims(np.array(clean), axis=2)
+        X_test = np.expand_dims(np.array(noised), axis=2)
         
         # FIR & IIR filters
         if args.exp_name == "FIR":
             from digital_filters.FIR_filter import FIR_test_Dataset
-            print(f"Evaluating FIR filter for noise type {n_type}...")
             [X_test, y_test, y_pred] = FIR_test_Dataset([None, None, X_test, y_test])
         
         elif args.exp_name == "IIR":
             from digital_filters.IIR_filter import IIR_test_Dataset
-            print(f"Evaluating IIR filter for noise type {n_type}...")
             [X_test, y_test, y_pred] = IIR_test_Dataset([None, None, X_test, y_test])
+            
+            X_test = X_test.transpose(0, 2, 1)
+            y_test = y_test.transpose(0, 2, 1)
+            y_pred = y_pred.transpose(0, 2, 1)
+            results = {
+                    'y_pred': y_pred,
+                    'y_true': y_test,
+                    'x_input': X_test
+                }
+            np.save(f"results/{args.exp_name}/results_{n_type}.npy", results)
         
         # dl_filters
         else:
@@ -122,6 +136,8 @@ def evaluate_model(args):
             model.eval()
 
             y_pred = []
+            y_true = []
+            x_input = []
             trajectory = []
             print(f"Evaluating {args.exp_name} model for noise type {n_type}...")
             with torch.no_grad():
@@ -138,7 +154,7 @@ def evaluate_model(args):
                             denoised_batch = denoised_batch / shots
                         else:
                             denoised_batch = model.denoising(noisy_batch)
-
+                            
                     elif args.exp_name == "EDDM":
                         shots = args.shots
                         if shots > 1:
@@ -161,6 +177,7 @@ def evaluate_model(args):
                         else:
                             [denoised_batch, denoised_trajectory] = model.sample(noisy_batch)
                             denoised_trajectory = torch.cat((denoised_trajectory, clean_batch.unsqueeze(0)), dim=0)
+                            trajectory.append(denoised_trajectory.cpu().numpy().transpose(1, 0, 2, 3))
                         
                     elif args.exp_name == "ECG_GAN":
                         batch_size = noisy_batch.shape[0]
@@ -171,79 +188,24 @@ def evaluate_model(args):
                         denoised_batch = model(noisy_batch)
                     
                     y_pred.append(denoised_batch.cpu().numpy())
-                    trajectory.append(denoised_trajectory.cpu().numpy().transpose(1, 0, 2, 3))
-            
+                    y_true.append(clean_batch.cpu().numpy())
+                    x_input.append(noisy_batch.cpu().numpy())
+                    
             y_pred = np.concatenate(y_pred, axis=0)
-            y_pred = np.transpose(y_pred, (0, 2, 1))
-            trajectory = np.concatenate(trajectory, axis=0)
-            np.save(f"results/{args.exp_name}_trajectory_{n_type}.npy", trajectory)
-
-        metrics = {
-            "SSD": SSD(y_test, y_pred),
-            "MAD": MAD(y_test, y_pred),
-            "PRD": PRD(y_test, y_pred),
-            "COS_SIM": COS_SIM(y_test, y_pred),
-            "SNR out": SNR(y_test, y_pred),
-            "ImSNR": SNR_improvement(X_test, y_pred, y_test)
-        }
-
-        if n_type == 1:
-            all_metrics = {k: v for k, v in metrics.items()}
-        else:
-            for k, v in metrics.items():
-                all_metrics[k] = np.concatenate([all_metrics[k], v])
-
-    metrics_stats = {}
-    for name, values in all_metrics.items():
-        mean_val = np.mean(values)
-        std_val = np.std(values)
-        metrics_stats[name] = f"{mean_val:.3f}±{std_val:.3f}"
-
-    if all_noise_levels:
-        n_level = np.concatenate(all_noise_levels)
-        # segs = [0.2, 0.6, 1.0, 1.5, 2.0]
-        segs = [-6, 0, 6, 12, 18]
-        segmented_results = {}
-        
-        for name in all_metrics:
-            segmented_results[name] = {}
-            for idx_seg in range(len(segs) - 1):
-                seg_label = f"{segs[idx_seg]}-{segs[idx_seg+1]}dB"
-                idx = np.where(np.logical_and(n_level >= segs[idx_seg], n_level <= segs[idx_seg + 1]))[0]
-                
-                if len(idx) == 0:
-                    segmented_results[name][seg_label] = "N/A"
-                    continue
-                
-                seg_values = all_metrics[name][idx]
-                mean_val = np.mean(seg_values)
-                std_val = np.std(seg_values)
-                segmented_results[name][seg_label] = f"{mean_val:.3f}±{std_val:.3f}"
-
-    with open(f"results/{args.exp_name}_results.csv", 'w', newline='') as f:
-        writer = csv.writer(f)
-
-        headers = ["Model", "SSD (au) ↓", "MAD (au) ↓", "PRD (%) ↓", "Cosine Sim ↑", "SNR out (dB) ↑", "ImSNR (dB) ↑"]
-        writer.writerow(headers)
-        writer.writerow([args.exp_name] + [metrics_stats[m] for m in ["SSD", "MAD", "PRD", "COS_SIM", "SNR out", "ImSNR"]])
-
-        writer.writerow([])
-
-        if all_noise_levels:
-            seg_labels = [f"{segs[i]}-{segs[i+1]}dB" for i in range(len(segs)-1)]
-            writer.writerow(["Metrics"] + seg_labels)
+            y_true = np.concatenate(y_true, axis=0)
+            x_input = np.concatenate(x_input, axis=0)
             
-            for metric in ["SSD", "MAD", "PRD", "COS_SIM", "SNR out", "ImSNR"]:
-                row = [metric]
-                for seg_label in seg_labels:
-                    if seg_label in segmented_results[metric]:
-                        row.append(segmented_results[metric][seg_label])
-                    else:
-                        row.append("N/A")
-                writer.writerow(row)
+            # if args.exp_name == "FlowMatching":
+            #     trajectory = np.concatenate(trajectory, axis=0)
+            #     np.save(f"results/{args.exp_name}/trajectory_{n_type}.npy", trajectory)
+            # else:
+            results = {
+                'y_pred': y_pred,
+                'y_true': y_true,
+                'x_input': x_input
+            }
+            np.save(f"results/{args.exp_name}/results_{n_type}.npy", results)
 
-    print(f"Evaluation complete for {args.exp_name}")
-    print(f"Results saved to results/{args.exp_name}_results.csv")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ECG Denoising Evaluation")
@@ -262,7 +224,6 @@ if __name__ == "__main__":
         "ECG_GAN",
     ], default="FlowMatching", help="Experiment name")
     parser.add_argument('--device', default='cuda:0' if torch.cuda.is_available() else 'cpu', help='Device')
-    parser.add_argument('--use_rmn', type=bool, default=True, help='Use Random Mixed Noise')
     parser.add_argument('--shots', type=int, default=1, help='Number of shots for Diffusion model')
     
     args = parser.parse_args()

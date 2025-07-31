@@ -392,7 +392,7 @@ def Data_Preparation_RMN(noise_version=1):
     X_train = np.array(sn_train)
     y_train = np.array(beats_train)
     
-    X_test = np.array(sn_test)
+    X_test = np.array(sn_test) # shape: N, L, C
     y_test = np.array(beats_test)
     
     X_train = np.expand_dims(X_train, axis=2)
