@@ -10,6 +10,30 @@ from torch import nn
 from torchdiffeq import odeint
 from .utils import default, exists
 
+from scipy.signal import butter, sosfilt, zpk2sos
+import numpy as np
+def iir_filter(tensor, Fs=360, Fc_l=0.47, Fc_h=40.0):
+    device = tensor.device
+    B, C, L = tensor.shape
+
+    tensor_np = tensor.cpu().numpy()
+    filtered_tensor = np.zeros_like(tensor_np)
+    
+    N = 4
+    Wn_l = Fc_l / (Fs / 2)
+    Wn_h = Fc_h / (Fs / 2)
+    
+    sos_hp = butter(N, Wn_l, 'highpass', analog=False, output='sos')
+    sos_lp = butter(N, Wn_h, 'lowpass', analog=False, output='sos')
+    
+    for b in range(B):
+        for c in range(C):
+            signal = tensor_np[b, c, :]
+            filtered_hp = sosfilt(sos_hp, signal)
+            filtered_signal = sosfilt(sos_lp, filtered_hp)
+            filtered_tensor[b, c, :] = filtered_signal
+    
+    return torch.tensor(filtered_tensor, dtype=tensor.dtype, device=device)
 
 class CFM(nn.Module):
     def __init__(
@@ -67,8 +91,8 @@ class CFM(nn.Module):
 
         def fn(t, x):
             nonlocal cond
-            x = torch.cat((x, cond), dim=1) if exists(cond) else x
-            return self.base_model(x=x, time=t.expand(x.shape[0]), x_self_cond=cond)
+            # x = torch.cat((x, cond), dim=1) if exists(cond) else x
+            return self.base_model(x=x, time=t.expand(x.shape[0]), x_self_cond=cond, cond=iir_filter(x))
         
         y0 = torch.randn_like(cond)
         # y0 = cond
@@ -96,11 +120,14 @@ class CFM(nn.Module):
             if method == "euler":
                 k1 = fn(t[i], x)
                 x = x + dt * k1
+                # x_final = x + dt * k1 * (steps - i)
             elif method == "midpoint":
                 k1 = fn(t[i], x)
                 k2 = fn(t[i] + dt/2, x + dt/2 * k1)
                 x = x + dt * k2
             trajectory.append(x)
+            # trajectory.append(x_final)
+        # trajectory.append(x)
             
         return torch.stack(trajectory)
 
@@ -117,9 +144,9 @@ class CFM(nn.Module):
         flow = x1 - x0
         cond = input
 
-        φ = torch.cat((φ, cond), dim=1) if exists(cond) else φ
+        # φ = torch.cat((φ, cond), dim=1) if exists(cond) else φ
         pred = self.base_model(
-            x=φ, time=time, x_self_cond=cond
+            x=φ, time=time, x_self_cond=cond, cond=iir_filter(φ)
         )
 
         loss = F.mse_loss(pred, flow, reduction="none")

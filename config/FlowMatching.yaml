@@ -18,7 +18,7 @@ base_model:
   dim: 64
   out_dim: 1
   channels: 1
-  self_condition: false
+  self_condition: true
   condition: true
 
 adapt_scheduler:

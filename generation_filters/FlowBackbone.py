@@ -47,7 +47,7 @@ class SpatialAttention(nn.Module):
 
 
 class CBAM(nn.Module):
-    def __init__(self, in_ch, ratio=16, kernel_size=7):
+    def __init__(self, in_ch, ratio=16, kernel_size=3):
         super(CBAM, self).__init__()
         self.ca = ChannelAttention(in_ch, ratio)
         self.sa = SpatialAttention(kernel_size)
@@ -57,123 +57,45 @@ class CBAM(nn.Module):
         out = x * attn_ca
         attn_sa = self.sa(out)
         result = out * attn_sa
-        return result
+        return result + x
 
-def IIR_filter_tensor(tensor, Fs=360, Fc_l=0.67, Fc_h=40.0):
-    B, C, L = tensor.shape
-    device = tensor.device
-    
-    tensor_np = tensor.cpu().numpy()
-    filtered_tensor = np.zeros_like(tensor_np)
-    
-    N = 4
-    Wn_l = Fc_l / (Fs / 2)
-    Wn_h = Fc_h / (Fs / 2)
-    b_hp, a_hp = butter(N, Wn_l, 'highpass', analog=False)
-    b_lp, a_lp = butter(N, Wn_h, 'lowpass', analog=False)
-    
-    for b in range(B):
-        for c in range(C):
-            signal = tensor_np[b, c, :].tolist()
-            
-            if N * 3 > L:
-                diff = N * 3 - L
-                padded_signal = list(reversed(signal)) + signal + [signal[-1]] * diff
-                filtered_hp = filtfilt(b_hp, a_hp, padded_signal)
-                filtered_hp = filtered_hp[L:2*L]
-                filtered_lp = filtfilt(b_lp, a_lp, padded_signal)
-                filtered_signal = filtered_lp[L:2*L]
-            else:
-                filtered_hp = filtfilt(b_hp, a_hp, signal)
-                filtered_signal = filtfilt(b_lp, a_lp, filtered_hp)
-            
-            filtered_tensor[b, c, :] = filtered_signal
-    
-    return torch.tensor(filtered_tensor, dtype=tensor.dtype, device=device)
+class Filter(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.mid_channels = 64
 
-class DAPPM(nn.Module):
-    
-    """ following @ydhongHIT 's Deep Aggregation Pyramid Pooling Module(DAPPM) """
-    """ https://github.com/ydhongHIT/DDRNet/blob/main/segmentation/DDRNet_23.py#L94 """
-    """ parameters set by EDDM: A Novel ECG Denoising Method Using Dual-Path Diffusion Model"""
-    def __init__(self, inplanes, branch_planes, outplanes, bn_mom=0.1):
-        super(DAPPM, self).__init__()
-        self.scale1 = nn.Sequential(nn.AvgPool1d(kernel_size=3, stride=2, padding=1),
-                                    nn.BatchNorm1d(inplanes, momentum=bn_mom),
-                                    nn.ReLU(inplace=True),
-                                    nn.Conv1d(inplanes, branch_planes, kernel_size=1, bias=False),
-                                    )
-        self.scale2 = nn.Sequential(nn.AvgPool1d(kernel_size=5, stride=4, padding=2),
-                                    nn.BatchNorm1d(inplanes, momentum=bn_mom),
-                                    nn.ReLU(inplace=True),
-                                    nn.Conv1d(inplanes, branch_planes, kernel_size=1, bias=False),
-                                    )
-        self.scale3 = nn.Sequential(nn.AvgPool1d(kernel_size=9, stride=8, padding=4),
-                                    nn.BatchNorm1d(inplanes, momentum=bn_mom),
-                                    nn.ReLU(inplace=True),
-                                    nn.Conv1d(inplanes, branch_planes, kernel_size=1, bias=False),
-                                    )
-        self.scale4 = nn.Sequential(nn.AdaptiveAvgPool1d(1),
-                                    # nn.BatchNorm1d(inplanes, momentum=bn_mom),
-                                    nn.ReLU(inplace=True),
-                                    nn.Conv1d(inplanes, branch_planes, kernel_size=1, bias=False),
-                                    )
-        self.scale0 = nn.Sequential(
-                                    nn.BatchNorm1d(inplanes, momentum=bn_mom),
-                                    nn.ReLU(inplace=True),
-                                    nn.Conv1d(inplanes, branch_planes, kernel_size=1, bias=False),
-                                    )
-        self.process1 = nn.Sequential(
-                                    nn.BatchNorm1d(branch_planes, momentum=bn_mom),
-                                    nn.ReLU(inplace=True),
-                                    nn.Conv1d(branch_planes, branch_planes, kernel_size=3, padding=1, bias=False),
-                                    )
-        self.process2 = nn.Sequential(
-                                    nn.BatchNorm1d(branch_planes, momentum=bn_mom),
-                                    nn.ReLU(inplace=True),
-                                    nn.Conv1d(branch_planes, branch_planes, kernel_size=3, padding=1, bias=False),
-                                    )
-        self.process3 = nn.Sequential(
-                                    nn.BatchNorm1d(branch_planes, momentum=bn_mom),
-                                    nn.ReLU(inplace=True),
-                                    nn.Conv1d(branch_planes, branch_planes, kernel_size=3, padding=1, bias=False),
-                                    )
-        self.process4 = nn.Sequential(
-                                    nn.BatchNorm1d(branch_planes, momentum=bn_mom),
-                                    nn.ReLU(inplace=True),
-                                    nn.Conv1d(branch_planes, branch_planes, kernel_size=3, padding=1, bias=False),
-                                    )        
-        self.compression = nn.Sequential(
-                                    nn.BatchNorm1d(branch_planes * 5, momentum=bn_mom),
-                                    nn.ReLU(inplace=True),
-                                    nn.Conv1d(branch_planes * 5, outplanes, kernel_size=1, bias=False),
-                                    )
-        self.shortcut = nn.Sequential(
-                                    nn.BatchNorm1d(inplanes, momentum=bn_mom),
-                                    nn.ReLU(inplace=True),
-                                    nn.Conv1d(inplanes, outplanes, kernel_size=1, bias=False),
-                                    )
+        self.down_sampling2 = self.down_sampling_layer(stride=2 ** 2)
+        self.down_sampling1 = self.down_sampling_layer(stride=2 ** 1)
+
+    def down_sampling_layer(self, stride):
+        return nn.Sequential(
+            nn.Conv1d(1, self.mid_channels, kernel_size=stride * 2 + 1, padding=stride, bias=False),
+            nn.BatchNorm1d(self.mid_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv1d(self.mid_channels, 1, kernel_size=stride * 2 + 1, padding=stride, bias=False),
+            nn.BatchNorm1d(1),
+            nn.AvgPool1d(kernel_size=stride * 2 + 1, stride=stride, padding=stride),
+        )
+
+    def bilinear_interpolate(self, data, target):
+        target_length = target.shape[-1]
+        data = data.unsqueeze(-2)
+        output_tensor = F.interpolate(data, size=(1, target_length), mode='bilinear', align_corners=True)
+        return output_tensor.squeeze(-2)
 
     def forward(self, x):
-        length = x.shape[-1]
-        x_list = []
+        
+        low = self.down_sampling2(x)
+        low = self.bilinear_interpolate(low, x) # low
+        res = x - low
+        
+        mid = self.down_sampling1(res) # mid
+        mid = self.bilinear_interpolate(mid, res)
+        
+        high = res - mid # high
 
-        x_list.append(self.scale0(x))
-        x_list.append(self.process1((F.interpolate(self.scale1(x),
-                        size=length, 
-                        mode='linear') + x_list[0])))
-        x_list.append((self.process2((F.interpolate(self.scale2(x),
-                        size=length,
-                        mode='linear') + x_list[1]))))
-        x_list.append(self.process3((F.interpolate(self.scale3(x),
-                        size=length,
-                        mode='linear') + x_list[2])))
-        x_list.append(self.process4((F.interpolate(self.scale4(x),
-                        size=length,
-                        mode='linear') + x_list[3])))
-       
-        out = self.compression(torch.cat(x_list, 1)) + self.shortcut(x)
-        return out
+        return [low, mid, high]
+
 
 class Residual(nn.Module):
     def __init__(self, fn):
@@ -415,6 +337,7 @@ class Unet(nn.Module):
 
         self.channels = channels
         self.self_condition = self_condition
+        self.condition = condition
         input_channels = channels + channels * \
             (1 if self_condition else 0) + channels * \
             (1 if condition else 0)
@@ -449,6 +372,7 @@ class Unet(nn.Module):
         )
 
         # layers
+        self.filter = Filter()
 
         self.downs = nn.ModuleList([])
         self.ups = nn.ModuleList([])
@@ -460,6 +384,7 @@ class Unet(nn.Module):
             self.downs.append(nn.ModuleList([
                 Downsample(dim_in, dim_in) if not is_first else nn.Identity(),
                 block_klass(dim_in, dim_out, time_emb_dim=time_dim),
+                CBAM(dim_out, ratio=8)
             ]))
 
         mid_dim = dims[-1]
@@ -472,7 +397,6 @@ class Unet(nn.Module):
 
             self.ups.append(nn.ModuleList([
                 block_klass(dim_out + dim_out, dim_in, time_emb_dim=time_dim),
-                block_klass(dim_in, dim_in, time_emb_dim=time_dim) if not is_last else None,
                 Upsample(dim_in, dim_in) if not is_last else nn.Identity(),
             ]))
 
@@ -484,10 +408,12 @@ class Unet(nn.Module):
         self.final_res_block = block_klass(dim * 2, dim, time_emb_dim=time_dim)
         self.final_conv = nn.Conv1d(dim, self.out_dim, 1)
 
-    def forward(self, x, time, x_self_cond=None):
-        if self.self_condition:
-            x_self_cond = default(x_self_cond, lambda: torch.zeros_like(x[:, :1, :]))
-            x = torch.cat((x_self_cond, x), dim=1)
+    def forward(self, x, time, x_self_cond=None, cond=None):
+        if self.condition:
+            x = torch.cat((x, cond), dim=1)
+            if self.self_condition:
+                x_self_cond = default(x_self_cond, lambda: torch.zeros_like(x[:, :1, :]))
+                x = torch.cat((x, x_self_cond), dim=1)
 
         x = self.init_conv(x)
         s = x.clone()
@@ -496,24 +422,24 @@ class Unet(nn.Module):
 
         h = []
 
-        for downsample, downblock in self.downs:
+        for downsample, downblock, attn in self.downs:
             x = downsample(x)
 
             x = downblock(x)
+            x = attn(x)
             h.append(x)
 
         x = self.mid_block1(x, t)
         x = self.mid_attn(x)
         x = self.mid_block2(x, t)
 
-        for upblock1, upblock2, upsample in self.ups:
+        for upblock1, upsample in self.ups:
             x = torch.cat((x, h.pop()), dim=1)
             x = upblock1(x, t)
-            x = upblock2(x, t) if upblock2 is not None else x
-
+            
             x = upsample(x)
 
-        x = torch.cat((x, self.ref_attn(s, x_self_cond)), dim=1)
+        x = torch.cat((x, s), dim=1)
 
         x = self.final_res_block(x, t)
         return self.final_conv(x)
