@@ -10,30 +10,6 @@ from torch import nn
 from torchdiffeq import odeint
 from .utils import default, exists
 
-from scipy.signal import butter, sosfilt, zpk2sos
-import numpy as np
-def iir_filter(tensor, Fs=360, Fc_l=0.47, Fc_h=40.0):
-    device = tensor.device
-    B, C, L = tensor.shape
-
-    tensor_np = tensor.cpu().numpy()
-    filtered_tensor = np.zeros_like(tensor_np)
-    
-    N = 4
-    Wn_l = Fc_l / (Fs / 2)
-    Wn_h = Fc_h / (Fs / 2)
-    
-    sos_hp = butter(N, Wn_l, 'highpass', analog=False, output='sos')
-    sos_lp = butter(N, Wn_h, 'lowpass', analog=False, output='sos')
-    
-    for b in range(B):
-        for c in range(C):
-            signal = tensor_np[b, c, :]
-            filtered_hp = sosfilt(sos_hp, signal)
-            filtered_signal = sosfilt(sos_lp, filtered_hp)
-            filtered_tensor[b, c, :] = filtered_signal
-    
-    return torch.tensor(filtered_tensor, dtype=tensor.dtype, device=device)
 
 class CFM(nn.Module):
     def __init__(
@@ -91,8 +67,8 @@ class CFM(nn.Module):
 
         def fn(t, x):
             nonlocal cond
-            # x = torch.cat((x, cond), dim=1) if exists(cond) else x
-            return self.base_model(x=x, time=t.expand(x.shape[0]), x_self_cond=cond, cond=iir_filter(x))
+            x = torch.cat((x, cond), dim=1) if exists(cond) else x
+            return self.base_model(x=x, time=t.expand(x.shape[0]), x_self_cond=cond)
         
         y0 = torch.randn_like(cond)
         # y0 = cond
@@ -120,14 +96,12 @@ class CFM(nn.Module):
             if method == "euler":
                 k1 = fn(t[i], x)
                 x = x + dt * k1
-                # x_final = x + dt * k1 * (steps - i)
+
             elif method == "midpoint":
                 k1 = fn(t[i], x)
                 k2 = fn(t[i] + dt/2, x + dt/2 * k1)
                 x = x + dt * k2
             trajectory.append(x)
-            # trajectory.append(x_final)
-        # trajectory.append(x)
             
         return torch.stack(trajectory)
 
@@ -144,121 +118,12 @@ class CFM(nn.Module):
         flow = x1 - x0
         cond = input
 
-        # φ = torch.cat((φ, cond), dim=1) if exists(cond) else φ
+        φ = torch.cat((φ, cond), dim=1) if exists(cond) else φ
         pred = self.base_model(
-            x=φ, time=time, x_self_cond=cond, cond=iir_filter(φ)
+            x=φ, time=time, x_self_cond=cond
         )
 
         loss = F.mse_loss(pred, flow, reduction="none")
         loss = loss.mean(dim=2).squeeze(1) * self.loss_weight(t=time)
         return loss.mean(), cond, pred
     
-
-class AdaCFM(nn.Module):
-    def __init__(
-        self,
-        base_model: nn.Module,
-        adapt_scheduler: nn.Module,
-        sigma=0.1,
-        odeint_kwargs: dict = dict(method="euler"),
-        num_channels=None,
-        sampling_timesteps: int = 10,
-        default_use_ode: bool = True
-    ):
-        super().__init__()
-        self.num_channels = num_channels
-
-        self.base_model = base_model
-        self.adapt_scheduler = adapt_scheduler
-        self.sigma = sigma
-        self.odeint_kwargs = odeint_kwargs
-        self.sampling_timesteps = sampling_timesteps
-        self.default_use_ode = default_use_ode
-
-    @property
-    def device(self):
-        return next(self.parameters()).device
-
-    @torch.no_grad()
-    def sample(self, cond, *, steps=None, use_ode: bool | None = None):
-        use_ode = self.default_use_ode if use_ode is None else use_ode
-        steps = default(steps, self.sampling_timesteps)
-
-        cond = cond.to(next(self.parameters()).dtype)
-        step_cond = cond.clone()
-        
-        device = self.device
-        dtype = cond.dtype
-
-        def fn(t, x):
-            nonlocal current_cond
-            x = torch.cat((x, current_cond), dim=1) if exists(current_cond) else x
-            return self.base_model(x=x, time=t.expand(x.shape[0]))
-        
-        y0 = torch.randn_like(cond)
-
-        with torch.no_grad():
-            pred_time = self.adapt_scheduler(y0).squeeze(-1)
-            sample_steps = torch.ceil(pred_time * steps).long()
-            unique_steps = torch.unique(sample_steps)
-
-        out = torch.zeros_like(y0)
-        trajectories = torch.zeros((steps+1, *y0.shape), device=device, dtype=dtype) if not use_ode else None
-
-        for step in unique_steps:
-            mask = (sample_steps == step)
-            sub_batch = y0[mask]
-            current_cond = step_cond[mask]
-            
-            current_steps = step.item()
-            t_start = 1 - current_steps / steps
-            t = torch.linspace(t_start, 1, current_steps + 1, device=device, dtype=dtype)
-
-            if use_ode:
-                sub_trajectory = odeint(fn, sub_batch, t, **self.odeint_kwargs)
-                out[mask] = sub_trajectory[-1]
-            else:
-                sub_trajectory = self._iterative_sample(fn, sub_batch, t, current_steps)
-                out[mask] = sub_trajectory[-1]
-        
-        return out, trajectories if not use_ode else out
-
-    def _iterative_sample(self, fn, y0, t, steps):
-        dt = t[1] - t[0]
-        trajectory = [y0]
-        x = y0
-        method = self.odeint_kwargs.get("method", "euler")
-        
-        for i in range(steps):
-            if method == "euler":
-                k1 = fn(t[i], x)
-                x = x + dt * k1
-            elif method == "midpoint":
-                k1 = fn(t[i], x)
-                k2 = fn(t[i] + dt / 2, x + dt / 2 * k1)
-                x = x + dt * k2
-            trajectory.append(x)
-            
-        return torch.stack(trajectory)
-
-    def forward(self, input, clean):
-
-        batch, _, dtype, device, _ = *input.shape[:2], input.dtype, self.device, self.sigma
-
-        x1 = clean
-        # x0 = torch.randn_like(x1)
-        x0 = input
-        time = torch.rand((batch,), dtype=dtype, device=self.device)
-        t = time.unsqueeze(-1).unsqueeze(-1)
-        φ = (1 - t) * x0 + t * x1
-        pred_time = self.adapt_scheduler(φ)
-        flow = x1 - x0
-        cond = input
-        φ = torch.cat((φ, cond), dim=1) if exists(cond) else φ
-        pred = self.base_model(
-            x=φ, time=time
-        )
-
-        loss = F.mse_loss(pred, flow, reduction="none")
-        loss = loss + self.sigma * F.mse_loss(pred_time, time.unsqueeze(-1), reduction="none")
-        return loss.mean(), cond, pred
