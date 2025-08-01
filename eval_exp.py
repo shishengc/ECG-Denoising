@@ -77,7 +77,7 @@ def evaluate_model(args):
             # FlowMatching
             elif (args.exp_name == "FlowMatching"):
                 from generation_filters.FlowBackbone import Unet
-                from generation_filters.FlowMatching import CFM, AdaCFM
+                from generation_filters.FlowMatching import CFM
                 
                 base_model = Unet(**config['base_model']).to(args.device)
                 model = CFM(base_model=base_model, **config['flow']).to(args.device)
