@@ -270,49 +270,89 @@ class Attention(nn.Module):
         return self.to_out(out)
 
 
-class CrossAttention(nn.Module):
-    def __init__(self,*, dim, heads=6, dim_head=32, context_dim=None, dropout=0., prenorm=True):
-        super().__init__()
-        context_dim = default(context_dim, dim)
+class DAPPM(nn.Module):
+    
+    """ following @ydhongHIT 's Deep Aggregation Pyramid Pooling Module(DAPPM) """
+    """ https://github.com/ydhongHIT/DDRNet/blob/main/segmentation/DDRNet_23.py#L94 """
+    """ parameters set by EDDM: A Novel ECG Denoising Method Using Dual-Path Diffusion Model"""
+    def __init__(self, inplanes, branch_planes, outplanes, bn_mom=0.1):
+        super(DAPPM, self).__init__()
+        self.scale1 = nn.Sequential(nn.AvgPool1d(kernel_size=3, stride=2, padding=1),
+                                    nn.BatchNorm1d(inplanes, momentum=bn_mom),
+                                    nn.ReLU(inplace=True),
+                                    nn.Conv1d(inplanes, branch_planes, kernel_size=1, bias=False),
+                                    )
+        self.scale2 = nn.Sequential(nn.AvgPool1d(kernel_size=5, stride=4, padding=2),
+                                    nn.BatchNorm1d(inplanes, momentum=bn_mom),
+                                    nn.ReLU(inplace=True),
+                                    nn.Conv1d(inplanes, branch_planes, kernel_size=1, bias=False),
+                                    )
+        self.scale3 = nn.Sequential(nn.AvgPool1d(kernel_size=9, stride=8, padding=4),
+                                    nn.BatchNorm1d(inplanes, momentum=bn_mom),
+                                    nn.ReLU(inplace=True),
+                                    nn.Conv1d(inplanes, branch_planes, kernel_size=1, bias=False),
+                                    )
+        self.scale4 = nn.Sequential(nn.AdaptiveAvgPool1d(1),
+                                    # nn.BatchNorm1d(inplanes, momentum=bn_mom),
+                                    nn.ReLU(inplace=True),
+                                    nn.Conv1d(inplanes, branch_planes, kernel_size=1, bias=False),
+                                    )
+        self.scale0 = nn.Sequential(
+                                    nn.BatchNorm1d(inplanes, momentum=bn_mom),
+                                    nn.ReLU(inplace=True),
+                                    nn.Conv1d(inplanes, branch_planes, kernel_size=1, bias=False),
+                                    )
+        self.process1 = nn.Sequential(
+                                    nn.BatchNorm1d(branch_planes, momentum=bn_mom),
+                                    nn.ReLU(inplace=True),
+                                    nn.Conv1d(branch_planes, branch_planes, kernel_size=3, padding=1, bias=False),
+                                    )
+        self.process2 = nn.Sequential(
+                                    nn.BatchNorm1d(branch_planes, momentum=bn_mom),
+                                    nn.ReLU(inplace=True),
+                                    nn.Conv1d(branch_planes, branch_planes, kernel_size=3, padding=1, bias=False),
+                                    )
+        self.process3 = nn.Sequential(
+                                    nn.BatchNorm1d(branch_planes, momentum=bn_mom),
+                                    nn.ReLU(inplace=True),
+                                    nn.Conv1d(branch_planes, branch_planes, kernel_size=3, padding=1, bias=False),
+                                    )
+        self.process4 = nn.Sequential(
+                                    nn.BatchNorm1d(branch_planes, momentum=bn_mom),
+                                    nn.ReLU(inplace=True),
+                                    nn.Conv1d(branch_planes, branch_planes, kernel_size=3, padding=1, bias=False),
+                                    )        
+        self.compression = nn.Sequential(
+                                    nn.BatchNorm1d(branch_planes * 5, momentum=bn_mom),
+                                    nn.ReLU(inplace=True),
+                                    nn.Conv1d(branch_planes * 5, outplanes, kernel_size=1, bias=False),
+                                    )
+        self.shortcut = nn.Sequential(
+                                    nn.BatchNorm1d(inplanes, momentum=bn_mom),
+                                    nn.ReLU(inplace=True),
+                                    nn.Conv1d(inplanes, outplanes, kernel_size=1, bias=False),
+                                    )
 
-        self.norm = nn.LayerNorm(dim) if prenorm else nn.Identity()
-        self.ref_norm = nn.LayerNorm(context_dim) if prenorm else nn.Identity()
-        
-        self.heads = heads
-        self.scale = dim_head ** -0.5
-        inner_dim = dim_head * heads
+    def forward(self, x):
+        length = x.shape[-1]
+        x_list = []
 
-        self.dropout = nn.Dropout(dropout)
-
-        self.to_q = nn.Linear(dim, inner_dim, bias=False)
-        self.to_k = nn.Linear(context_dim, inner_dim, bias=False)
-        self.to_v = nn.Linear(context_dim, inner_dim, bias=False)
-        
-        self.to_out = nn.Linear(inner_dim, dim)
-
-    def forward(self, x, ref=None):
-        h = self.heads
-        x = x.transpose(1, 2)
-        ref = ref.transpose(1, 2)
-
-        x = self.norm(x)
-        ref = self.ref_norm(ref)
-        k = self.to_k(ref) 
-        v = self.to_v(ref) 
-
-        q = self.to_q(x)  
-        
-        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h=h), (q, k, v)) 
-        sim = einsum('b h i d, b h j d -> b h i j', q, k) * self.scale 
-        attn = sim.softmax(dim=-1)
-
-        attn = self.dropout(attn)
-
-        out = einsum('b h i j, b h j d -> b h i d', attn, v)
-        out = rearrange(out, 'b h n d -> b n (h d)')
-        out = self.to_out(out)
-
-        return out.transpose(1, 2)
+        x_list.append(self.scale0(x))
+        x_list.append(self.process1((F.interpolate(self.scale1(x),
+                        size=length, 
+                        mode='linear') + x_list[0])))
+        x_list.append((self.process2((F.interpolate(self.scale2(x),
+                        size=length,
+                        mode='linear') + x_list[1]))))
+        x_list.append(self.process3((F.interpolate(self.scale3(x),
+                        size=length,
+                        mode='linear') + x_list[2])))
+        x_list.append(self.process4((F.interpolate(self.scale4(x),
+                        size=length,
+                        mode='linear') + x_list[3])))
+       
+        out = self.compression(torch.cat(x_list, 1)) + self.shortcut(x)
+        return out
 
 
 class Unet(nn.Module):
@@ -383,8 +423,7 @@ class Unet(nn.Module):
 
             self.downs.append(nn.ModuleList([
                 Downsample(dim_in, dim_in) if not is_first else nn.Identity(),
-                block_klass(dim_in, dim_out, time_emb_dim=time_dim),
-                CBAM(dim_out, ratio=8)
+                block_klass(dim_in, dim_out, time_emb_dim=time_dim)
             ]))
 
         mid_dim = dims[-1]
@@ -397,23 +436,21 @@ class Unet(nn.Module):
 
             self.ups.append(nn.ModuleList([
                 block_klass(dim_out + dim_out, dim_in, time_emb_dim=time_dim),
+                block_klass(dim_in, dim_in, time_emb_dim=time_dim) if not is_last else None,
                 Upsample(dim_in, dim_in) if not is_last else nn.Identity(),
             ]))
 
         default_out_dim = channels * (1 if not learned_variance else 2)
         self.out_dim = default(out_dim, default_out_dim)
 
-        # self.dapp = DAPPM(dim, dim * 2, dim)
-        self.ref_attn = CrossAttention(dim=init_dim, context_dim=1)
+        self.dapp = DAPPM(dim, dim * 2, dim)
         self.final_res_block = block_klass(dim * 2, dim, time_emb_dim=time_dim)
         self.final_conv = nn.Conv1d(dim, self.out_dim, 1)
 
-    def forward(self, x, time, x_self_cond=None, cond=None):
-        if self.condition:
-            x = torch.cat((x, cond), dim=1)
-            if self.self_condition:
-                x_self_cond = default(x_self_cond, lambda: torch.zeros_like(x[:, :1, :]))
-                x = torch.cat((x, x_self_cond), dim=1)
+    def forward(self, x, time, x_self_cond=None):
+        if self.self_condition:
+            x_self_cond = default(x_self_cond, lambda: torch.zeros_like(x[:, :1, :]))
+            x = torch.cat((x_self_cond, x), dim=1)
 
         x = self.init_conv(x)
         s = x.clone()
@@ -422,24 +459,24 @@ class Unet(nn.Module):
 
         h = []
 
-        for downsample, downblock, attn in self.downs:
+        for downsample, downblock in self.downs:
             x = downsample(x)
 
             x = downblock(x)
-            x = attn(x)
             h.append(x)
 
         x = self.mid_block1(x, t)
         x = self.mid_attn(x)
         x = self.mid_block2(x, t)
 
-        for upblock1, upsample in self.ups:
+        for upblock1, upblock2, upsample in self.ups:
             x = torch.cat((x, h.pop()), dim=1)
             x = upblock1(x, t)
-            
+            x = upblock2(x, t) if upblock2 is not None else x
+
             x = upsample(x)
 
-        x = torch.cat((x, s), dim=1)
+        x = torch.cat((x, self.dapp(s)), dim=1)
 
         x = self.final_res_block(x, t)
         return self.final_conv(x)
