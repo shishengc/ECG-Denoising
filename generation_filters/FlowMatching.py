@@ -10,7 +10,7 @@ from torch import nn
 from torchdiffeq import odeint
 from .utils import default, exists
 
-from AttnUnet import AutoEncoder
+from .AttnUnet import AutoEncoder
 class CFM(nn.Module):
     def __init__(
         self,
@@ -47,10 +47,10 @@ class CFM(nn.Module):
         elif self.loss_type == "mean":
             return torch.ones_like(t).to(self.device)
     
-    def vae_loss(recon_x, x, mean, logvar):
-        recon_loss = F.mse_loss(recon_x, x, reduction='none')
+    def vae_loss(self, recon_x, x, mean, logvar):
+        recon_loss = F.mse_loss(recon_x, x, reduction='mean')
         kl_loss = -1e-4 * (1 + logvar - mean.pow(2) - logvar.exp())
-        vae_loss = recon_loss + kl_loss
+        vae_loss = recon_loss + kl_loss.mean()
     
         return vae_loss
 
@@ -138,7 +138,7 @@ class CFM(nn.Module):
 
         loss = F.mse_loss(pred, flow, reduction="none")
         vae_loss = self.vae_loss(recon_x0, input, mean, logvar)
-        loss = loss + vae_loss
-        loss = loss.mean(dim=2).squeeze(1) * self.loss_weight(t=time)
-        return loss.mean(), cond, pred
+        # loss = loss.mean(dim=2).squeeze(1) * self.loss_weight(t=time)
+        loss = loss.mean(dim=(1,2)) * self.loss_weight(t=time)
+        return loss.mean() + vae_loss, cond, pred
     

@@ -177,7 +177,7 @@ class AutoEncoder(nn.Module):
     def __init__(self, img_ch=1, output_ch=4):
         super(AutoEncoder, self).__init__()
         self.encoder = Attn_UNet(img_ch=img_ch, output_ch=output_ch)
-        self.decoder = Attn_UNet(img_ch=output_ch, output_ch=img_ch)
+        self.decoder = Attn_UNet(img_ch=output_ch, output_ch=img_ch, double_conv=False)
         self.scale_factor = 1.
     
     def sample(self, moments):
