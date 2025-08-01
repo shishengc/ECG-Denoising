@@ -15,6 +15,7 @@ class CFM(nn.Module):
     def __init__(
         self,
         base_model: nn.Module,
+        autoencoder: nn.Module,
         sigma=1.75,
         odeint_kwargs: dict = dict(method="euler"),
         num_channels=None,
@@ -31,7 +32,8 @@ class CFM(nn.Module):
         self.sampling_timesteps = sampling_timesteps
         self.default_use_ode = default_use_ode
         self.loss_type = loss_type
-        self.autoencoder = AutoEncoder()
+        self.autoencoder = autoencoder
+
 
     @property
     def device(self):
@@ -79,8 +81,8 @@ class CFM(nn.Module):
             x = torch.cat((x, cond), dim=1) if exists(cond) else x
             return self.base_model(x=x, time=t.expand(x.shape[0]), x_self_cond=cond)
         
-        # y0 = torch.randn_like(cond)
-        y0 = cond
+        y0 = torch.randn_like(cond)
+        # y0 = cond
         t_start = 0
         t = torch.linspace(t_start, 1, steps + 1, device=self.device, dtype=step_cond.dtype)
         
@@ -121,15 +123,19 @@ class CFM(nn.Module):
 
         # x1 = clean
         # x0 = torch.randn_like(x1)
-        x1, _, _ = self.autoencoder.encode(clean)
-        x0, mean, logvar = self.autoencoder.encode(input)
-        recon_x0 = self.autoencoder.decode(x0)
+        
+        # VAE AutoEncoder
+        with torch.no_grad():
+            x1 = self.autoencoder.encode(clean)[0]
+            # x0 = self.autoencoder.encode(input)[0]
+            x0 = torch.randn_like(x1)
+
         # x0 = input
         time = torch.rand((batch,), dtype=dtype, device=self.device)
         t = time.unsqueeze(-1).unsqueeze(-1)
         φ = (1 - t) * x0 + t * x1
         flow = x1 - x0
-        cond = x0
+        cond = self.autoencoder.encode(input)[0]
 
         φ = torch.cat((φ, cond), dim=1) if exists(cond) else φ
         pred = self.base_model(
@@ -137,8 +143,8 @@ class CFM(nn.Module):
         )
 
         loss = F.mse_loss(pred, flow, reduction="none")
-        vae_loss = self.vae_loss(recon_x0, input, mean, logvar)
+        # vae_loss = self.vae_loss(recon_x0, input, mean, logvar)
         # loss = loss.mean(dim=2).squeeze(1) * self.loss_weight(t=time)
         loss = loss.mean(dim=(1,2)) * self.loss_weight(t=time)
-        return loss.mean() + vae_loss, cond, pred
+        return loss.mean(), cond, pred
     

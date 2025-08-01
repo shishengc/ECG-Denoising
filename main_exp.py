@@ -106,7 +106,12 @@ if __name__ == "__main__":
         from generation_filters.FlowMatching import CFM
         
         base_model = Unet(**config['base_model']).to(args.device)
-        model = CFM(base_model=base_model, **config['flow']).to(args.device)
+        from generation_filters.AttnUnet import AutoEncoder
+        autoencoder = AutoEncoder()
+        autoencoder.load_state_dict(torch.load("./check_points/VAE/noise_type_1/model.pth", weights_only=True))
+        autoencoder.to(args.device)
+        autoencoder.eval()
+        model = CFM(base_model=base_model, autoencoder=autoencoder, **config['flow']).to(args.device)
         
         train_flow(model, config['train'], train_loader, args.device, 
         valid_loader=val_loader, valid_epoch_interval=args.val_interval, foldername=foldername, log_dir=log_dir)

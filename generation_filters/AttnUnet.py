@@ -178,7 +178,7 @@ class AutoEncoder(nn.Module):
         super(AutoEncoder, self).__init__()
         self.encoder = Attn_UNet(img_ch=img_ch, output_ch=output_ch)
         self.decoder = Attn_UNet(img_ch=output_ch, output_ch=img_ch, double_conv=False)
-        self.scale_factor = 1.
+        self.scale_factor = 0.1
     
     def sample(self, moments):
         mean, logvar = torch.chunk(moments, 2, dim=1)
