@@ -412,7 +412,6 @@ class Unet(nn.Module):
         )
 
         # layers
-        self.filter = Filter()
 
         self.downs = nn.ModuleList([])
         self.ups = nn.ModuleList([])

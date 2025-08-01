@@ -15,7 +15,6 @@ class CFM(nn.Module):
     def __init__(
         self,
         base_model: nn.Module,
-        autoencoder: nn.Module,
         sigma=1.75,
         odeint_kwargs: dict = dict(method="euler"),
         num_channels=None,
