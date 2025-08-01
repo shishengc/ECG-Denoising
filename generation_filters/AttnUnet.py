@@ -101,7 +101,7 @@ class LayerNorm(nn.Module):
 
 
 class Attn_UNet(nn.Module):
-    def __init__(self, img_ch=3, output_ch=1):
+    def __init__(self, img_ch=1, output_ch=4, double_conv=True):
         super(Attn_UNet, self).__init__()
 
         self.Maxpool = nn.MaxPool1d(kernel_size=2, stride=2)
@@ -128,8 +128,9 @@ class Attn_UNet(nn.Module):
         self.Att2 = AGs(F_g=64, F_l=64, F_int=32)
         self.Up_conv2 = conv_block(ch_in=128, ch_out=64)
 
-        self.Conv_1x1 = nn.Conv1d(64, output_ch, kernel_size=1, stride=1, padding=0)
-        self.sigmoid = nn.Sigmoid()
+        self.Conv_out = nn.Conv1d(64, 
+                                  output_ch * 2 if double_conv else output_ch,
+                                  kernel_size=1, stride=1, padding=0, bias=True)
 
     def forward(self, x):
         x1 = self.Conv1(x)
@@ -167,56 +168,45 @@ class Attn_UNet(nn.Module):
         d2 = torch.cat((x1, d2), dim=1)
         d2 = self.Up_conv2(d2)
 
-        d1 = self.Conv_1x1(d2)
-
-        d1 = self.sigmoid(d1)
+        d1 = self.Conv_out(d2)
+        
         return d1
 
-    def forward_attention(self, x):
-        x1 = self.Conv1(x)
 
-        x2 = self.Maxpool(x1)
-        x2 = self.Conv2(x2)
+class AutoEncoder(nn.Module):
+    def __init__(self, img_ch=1, output_ch=4):
+        super(AutoEncoder, self).__init__()
+        self.encoder = Attn_UNet(img_ch=img_ch, output_ch=output_ch)
+        self.decoder = Attn_UNet(img_ch=output_ch, output_ch=img_ch)
+        self.scale_factor = 1.
+    
+    def sample(self, moments):
+        mean, logvar = torch.chunk(moments, 2, dim=1)
+        logvar = torch.clamp(logvar, -30, 20)
+        std = torch.exp(0.5 * logvar)
+        z = mean + std * torch.randn_like(mean)
+        z = self.scale_factor * z
+        
+        return z, mean, logvar
+    
+    def encode(self, x):
+        moments = self.encoder(x)
+        latent, mean, logvar = self.sample(moments)
+        return latent, mean, logvar
+    
+    def decode(self, z):
+        z = (1. / self.scale_factor) * z
+        decoded = self.decoder(z)
+        return decoded
 
-        x3 = self.Maxpool(x2)
-        x3 = self.Conv3(x3)
-
-        x4 = self.Maxpool(x3)
-        x4 = self.Conv4(x4)
-
-        x5 = self.Maxpool(x4)
-        x5 = self.Conv5(x5)
-
-        d5 = self.Up5(x5)
-        _x4, attn4 = self.Att5.forward_attention(g=d5, x=x4)
-        d5 = torch.cat((_x4, d5), dim=1)
-        d5 = self.Up_conv5(d5)
-
-        d4 = self.Up4(d5)
-        _x3, attn3 = self.Att4.forward_attention(g=d4, x=x3)
-        d4 = torch.cat((_x3, d4), dim=1)
-        d4 = self.Up_conv4(d4)
-
-        d3 = self.Up3(d4)
-        _x2, attn2 = self.Att3.forward_attention(g=d3, x=x2)
-        d3 = torch.cat((_x2, d3), dim=1)
-        d3 = self.Up_conv3(d3)
-
-        d2 = self.Up2(d3)
-        _x1, attn1 = self.Att2.forward_attention(g=d2, x=x1)
-        d2 = torch.cat((_x1, d2), dim=1)
-        d2 = self.Up_conv2(d2)
-
-        d1 = self.Conv_1x1(d2)
-
-        d1 = self.sigmoid(d1)
-        return d1, x1, x2, x3, x4, x5, attn1, attn2, attn3, attn4
-
-
+    def forward(self, x):
+        latent, mean, logvar = self.encode(x)
+        decoded = self.decode(latent)
+        return decoded, mean, logvar
 
 
 if __name__ == "__main__":
-    model = Attn_UNet(img_ch=1, output_ch=1)
+    model = AutoEncoder(img_ch=1, output_ch=4)
     x = torch.randn(64, 1, 512)  # Example input
     output = model(x)
     print(output.shape)
