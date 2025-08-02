@@ -7,7 +7,7 @@ from tqdm import tqdm
 from utils.loss_function import SSDLoss, CombinedSSDMADLoss, MADLoss, HuberFreqLoss
 from utils.train_utils import LRScheduler, EarlyStopping
 
-def train_diffusion(model, config, train_loader, device, valid_loader=None, valid_epoch_interval=5, foldername="", log_dir=None):
+def train_diffusion(model, config, dataset, device, valid_epoch_interval=5, foldername="", log_dir=None):
 
     optimizer_config = config['optimizer']
     optimizer_type = getattr(optim, optimizer_config.get("type", "Adam"))
@@ -15,6 +15,8 @@ def train_diffusion(model, config, train_loader, device, valid_loader=None, vali
 
     #ema = EMA(0.9)
     #ema.register(model)
+    
+    train_loader, valid_loader, _ = dataset._get_loader()
     
     if foldername != "":
         output_path = foldername + "/model.pth"
@@ -55,7 +57,7 @@ def train_diffusion(model, config, train_loader, device, valid_loader=None, vali
                 lr_scheduler.step()
         writer.add_scalar('Loss/Train', avg_loss / batch_no, epoch_no)
             
-        if valid_loader is not None and (epoch_no + 1) % valid_epoch_interval == 0:
+        if (epoch_no + 1) % config['val_interval'] == 0:
             model.eval()
             avg_loss_valid = 0
             with torch.no_grad():
@@ -85,7 +87,7 @@ def train_diffusion(model, config, train_loader, device, valid_loader=None, vali
     torch.save(model.state_dict(), final_path)
 
 
-def train_gan(generator, discriminator, config, train_loader, device, valid_loader=None, valid_epoch_interval=5, foldername="", log_dir=None):
+def train_gan(generator, discriminator, config, dataset, device, foldername="", log_dir=None):
     
     optimizer_config = config['optimizer']
     optimizer_type = getattr(optim, optimizer_config.get("type", "RMSprop"))
@@ -105,6 +107,9 @@ def train_gan(generator, discriminator, config, train_loader, device, valid_load
     best_valid_loss = 1e15
     writer = SummaryWriter(log_dir=log_dir)
     lambda_l1 = config.get('lambda_l1', 100.0)
+    
+    # Get train and validation loaders
+    train_loader, valid_loader, _ = dataset._get_loader()
     
     for epoch_no in range(config["epochs"]):
         avg_g_loss = 0
@@ -162,7 +167,7 @@ def train_gan(generator, discriminator, config, train_loader, device, valid_load
         writer.add_scalar('Loss/Generator', avg_g_loss / batch_no, epoch_no)
         writer.add_scalar('Loss/Discriminator', avg_d_loss / batch_no, epoch_no)
         
-        if valid_loader is not None and (epoch_no + 1) % valid_epoch_interval == 0:
+        if (epoch_no + 1) % config['val_interval'] == 0:
             generator.eval()
             discriminator.eval()
             avg_valid_loss = 0
@@ -201,7 +206,7 @@ def train_gan(generator, discriminator, config, train_loader, device, valid_load
         torch.save(discriminator.state_dict(), disc_final_path)    
     
 
-def train_dl(model, config, train_loader, device, valid_loader=None, valid_epoch_interval=5, foldername="", log_dir=None):
+def train_dl(model, config, dataset, device, foldername="", log_dir=None):
 
     # optimizer config
     optimizer_config = config['optimizer']
@@ -242,6 +247,9 @@ def train_dl(model, config, train_loader, device, valid_loader=None, valid_epoch
     best_valid_loss = 1e15
     writer = SummaryWriter(log_dir=log_dir)
     
+    # Get train and validation loaders
+    train_loader, valid_loader, _ = dataset._get_loader()
+    
     # training loop
     for epoch_no in range(config["epochs"]):
         avg_loss = 0
@@ -281,7 +289,7 @@ def train_dl(model, config, train_loader, device, valid_loader=None, valid_epoch
         writer.add_scalar('SSD/Train', avg_ssd / batch_no, epoch_no)
         writer.add_scalar('MAD/Train', avg_mad / batch_no, epoch_no)
             
-        if valid_loader is not None and (epoch_no + 1) % valid_epoch_interval == 0:
+        if (epoch_no + 1) % config['val_interval'] == 0:
             model.eval()
             avg_loss_valid = 0
             avg_ssd_valid = 0
@@ -332,22 +340,15 @@ def train_dl(model, config, train_loader, device, valid_loader=None, valid_epoch
     torch.save(model.state_dict(), final_path)
     
 
-def train_eddm(model, config, train_loader, device, valid_loader=None, valid_epoch_interval=5, foldername="", log_dir=None):
+def train_eddm(model, config, dataset, device, foldername="", log_dir=None):
     from ema_pytorch import EMA
-    train_num_steps = config.get("epochs", 500)
-    gradient_accumulate_every = config.get("gradient_accumulate_every", 1)
-    valid_epoch_interval = config.get("valid_epoch_interval", 1)
-    condition = config.get("condition", False)
-    
-    num_unet = config.get("num_unet", 2)
 
     optimizer_config = config['optimizer']
     optimizer_type = getattr(optim, optimizer_config.get("type", "Adam"))
     opt0 = optimizer_type(model.base_model.unet0.parameters(), **{k: v for k, v in optimizer_config.items() if k not in ['type']})
     opt1 = optimizer_type(model.base_model.unet1.parameters(), **{k: v for k, v in optimizer_config.items() if k not in ['type']})
 
-    use_ema = config.get("use_ema", False)
-    if use_ema:
+    if config['use_ema']:
         ema = EMA(model, beta=0.995, update_every=10)
         ema.to(device)
 
@@ -358,21 +359,23 @@ def train_eddm(model, config, train_loader, device, valid_loader=None, valid_epo
     step = 0
     best_valid_loss = 1e15
     writer = SummaryWriter(log_dir=log_dir)
-
+    
+    # Get train and validation loaders
+    train_loader, valid_loader, _ = dataset._get_loader()
     data_iter = iter(train_loader)
     
-    with tqdm(initial=step, total=train_num_steps) as pbar:
-        while step < train_num_steps:
+    with tqdm(initial=step, total=config['steps']) as pbar:
+        while step < config['steps']:
             model.train()
             
-            if num_unet == 1:
+            if config['num_unet'] == 1:
                 total_loss = [0]
-            elif num_unet == 2:
+            elif config['num_unet'] == 2:
                 total_loss = [0, 0]
             
-            for _ in range(gradient_accumulate_every):
+            for _ in range(config['gradient_accumulate_every']):
                 try:
-                    if condition:
+                    if config['condition']:
                         clean_batch, noisy_batch = next(data_iter)
                         clean_batch, noisy_batch = clean_batch.to(device), noisy_batch.to(device)
                         data = [clean_batch, noisy_batch]
@@ -381,9 +384,10 @@ def train_eddm(model, config, train_loader, device, valid_loader=None, valid_epo
                         clean_batch = clean_batch[0] if isinstance(clean_batch, list) else clean_batch
                         clean_batch = clean_batch.to(device)
                         data = clean_batch
+                        
                 except StopIteration:
                     data_iter = iter(train_loader)
-                    if condition:
+                    if config['condition']:
                         clean_batch, noisy_batch = next(data_iter)
                         clean_batch, noisy_batch = clean_batch.to(device), noisy_batch.to(device)
                         data = [clean_batch, noisy_batch]
@@ -395,39 +399,39 @@ def train_eddm(model, config, train_loader, device, valid_loader=None, valid_epo
                 
                 loss = model(data)
                 
-                for i in range(num_unet):
-                    loss[i] = loss[i] / gradient_accumulate_every
+                for i in range(config['num_unet']):
+                    loss[i] = loss[i] / config['gradient_accumulate_every']
                     total_loss[i] = total_loss[i] + loss[i].item()
                 
-                for i in range(num_unet):
+                for i in range(config['num_unet']):
                     loss[i].backward()
 
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
-            if num_unet == 1:
+            if config['num_unet'] == 1:
                 opt0.step()
                 opt0.zero_grad()
-            elif num_unet == 2:
+            elif config['num_unet'] == 2:
                 opt0.step()
                 opt0.zero_grad()
                 opt1.step()
                 opt1.zero_grad()
 
-            if use_ema:
+            if config['use_ema']:
                 ema.update()
 
             step += 1
             pbar.update(1)
             
-            if num_unet == 1:
+            if config['num_unet'] == 1:
                 pbar.set_description(f'loss_unet0: {total_loss[0]:.4f}')
-            elif num_unet == 2:
+            elif config['num_unet'] == 2:
                 pbar.set_description(f'loss_unet0: {total_loss[0]:.4f},loss_unet1: {total_loss[1]:.4f}')
 
-            for i in range(num_unet):
+            for i in range(config['num_unet']):
                 writer.add_scalar(f'Loss/Train/UNet{i}', total_loss[i], step)
 
-            if step % valid_epoch_interval == 0:
+            if step % config['val_interval'] == 0:
                 if valid_loader is not None:
                     model.eval()
                     avg_loss_valid = 0
@@ -457,32 +461,27 @@ def train_eddm(model, config, train_loader, device, valid_loader=None, valid_epo
                         print(f"\n Best loss updated to {avg_loss_valid / batch_no:.4f} at step {step}")
                         
                         if foldername != "":
-                            if use_ema:
+                            if config['use_ema']:
                                 torch.save(ema.ema_model.state_dict(), output_path)
                             else:
                                 torch.save(model.state_dict(), output_path)
 
     if foldername != "":
-        if use_ema:
+        if config['use_ema']:
             torch.save(ema.ema_model.state_dict(), final_path)
         else:
             torch.save(model.state_dict(), final_path)
     
 
 
-def train_flow(model, config, train_loader, device, valid_loader=None, valid_epoch_interval=5, foldername="", log_dir=None):
+def train_flow(model, config, dataset, device, foldername="", log_dir=None):
     from ema_pytorch import EMA
-    train_num_steps = config.get("epochs", 500)
-    gradient_accumulate_every = config.get("gradient_accumulate_every", 1)
-    valid_epoch_interval = config.get("valid_epoch_interval", 1)
-    condition = config.get("condition", False)
     
     optimizer_config = config['optimizer']
     optimizer_type = getattr(optim, optimizer_config.get("type", "Adam"))
     optimizer = optimizer_type(model.base_model.parameters(), **{k: v for k, v in optimizer_config.items() if k not in ['type']})
 
-    use_ema = config.get("use_ema", False)
-    if use_ema:
+    if config['use_ema']:
         ema = EMA(model, beta=0.995, update_every=10)
         ema.to(device)
 
@@ -494,15 +493,17 @@ def train_flow(model, config, train_loader, device, valid_loader=None, valid_epo
     best_valid_loss = 1e15
     writer = SummaryWriter(log_dir=log_dir)
 
+    # Get train and validation loaders
+    train_loader, valid_loader, _ = dataset._get_loader()
     data_iter = iter(train_loader)
     
-    with tqdm(initial=step, total=train_num_steps) as pbar:
-        while step < train_num_steps:
+    with tqdm(initial=step, total=config['steps']) as pbar:
+        while step < config['steps']:
             model.train()
             total_loss = 0.
             optimizer.zero_grad()
        
-            for _ in range(gradient_accumulate_every):
+            for _ in range(config['gradient_accumulate_every']):
                 try:
                     clean_batch, noisy_batch = next(data_iter)
                     clean_batch, noisy_batch = clean_batch.to(device), noisy_batch.to(device)
@@ -512,7 +513,7 @@ def train_flow(model, config, train_loader, device, valid_loader=None, valid_epo
                     clean_batch, noisy_batch = clean_batch.to(device), noisy_batch.to(device)
       
                 loss, _, _ = model(noisy_batch, clean_batch)
-                loss/= gradient_accumulate_every
+                loss/= config['gradient_accumulate_every']
                 total_loss += loss.item()
                 
                 loss.backward()
@@ -520,18 +521,19 @@ def train_flow(model, config, train_loader, device, valid_loader=None, valid_epo
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
 
-            if use_ema:
+            if config['use_ema']:
                 ema.update()
 
             step += 1
             pbar.update(1)
-            pbar.set_description(f'loss: {total_loss:.4f}')
+            pbar.set_description(f'train_loss: {total_loss:.4f}')
             
             writer.add_scalar(f'Loss/Train', total_loss, step)
 
-            if step % valid_epoch_interval == 0:
+            if step % config['val_interval'] == 0:
                 if valid_loader is not None:
                     model.eval()
+                    loss_list = []
                     avg_loss_valid = 0
                     
                     with torch.no_grad():
@@ -540,32 +542,43 @@ def train_flow(model, config, train_loader, device, valid_loader=None, valid_epo
                                 clean_batch, noisy_batch = clean_batch.to(device), noisy_batch.to(device)
 
                                 [denoised_batch, _] = ema.ema_model.sample(noisy_batch)
-                                loss = SSDLoss()(denoised_batch, clean_batch).item()
                                 
+                                if dataset.refresh == False:
+                                    loss = SSDLoss()(denoised_batch, clean_batch).item()
+                                else:
+                                    loss = torch.sum((denoised_batch - clean_batch)**2, dim=-1).squeeze(1)
+                                    loss_list.append(np.array(loss.cpu().numpy()))
+                                    loss = loss.mean().item()
+                                    
                                 avg_loss_valid += loss
                                 
                                 it.set_postfix(
                                 ordered_dict={
-                                    "valid_avg_epoch_loss": f"{avg_loss_valid / batch_no:.4f}",
-                                    "epoch": step,
+                                    "valid_avg_loss": f"{avg_loss_valid / batch_no:.4f}",
+                                    "Steo": step,
                                 },
                                 refresh=True,
                                 )
 
                         writer.add_scalar('Loss/Validation', avg_loss_valid / batch_no, step)
                     
+                    if loss_list:
+                        loss_list = np.concatenate(loss_list)
+                        train_loader = dataset.update(loss_list)
+                        data_iter = iter(train_loader)
+                    
                     if best_valid_loss > avg_loss_valid / batch_no:
                         best_valid_loss = avg_loss_valid / batch_no
                         print(f"\n Best loss updated to {avg_loss_valid / batch_no:.4f} at step {step}")
                         
                         if foldername != "":
-                            if use_ema:
+                            if config['use_ema']:
                                 torch.save(ema.ema_model.state_dict(), output_path)
                             else:
                                 torch.save(model.state_dict(), output_path)
 
     if foldername != "":
-        if use_ema:
+        if config['use_ema']:
             torch.save(ema.ema_model.state_dict(), final_path)
         else:
             torch.save(model.state_dict(), final_path)

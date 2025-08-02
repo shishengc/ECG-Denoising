@@ -1,6 +1,7 @@
 # config/ECG_GAN.yaml
 train:
   epochs: 70
+  val_interval: 5
   batch_size: 100
   optimizer:
     type: "RMSprop"

@@ -3,7 +3,12 @@ import yaml
 from pathlib import Path
 import _pickle as pickle
 
-def Data_Preparation(noise_version=1):
+import torch
+import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader, Subset, TensorDataset
+from sklearn.model_selection import train_test_split
+
+def Data_Preparation(n_type=1):
 
     print('Getting the Data ready ... ')
     
@@ -44,14 +49,14 @@ def Data_Preparation(noise_version=1):
     #####################################
     # Data split
     #####################################
-    if noise_version == 1:
+    if n_type == 1:
         noise_test = bw_noise_channel2_b
         noise_train = bw_noise_channel1_a
-    elif noise_version == 2:
+    elif n_type == 2:
         noise_test = bw_noise_channel1_b
         noise_train = bw_noise_channel2_a
     else:
-        raise Exception("Sorry, noise_version should be 1 or 2")
+        raise Exception("Sorry, n_type should be 1 or 2")
 
     #####################################
     # QTDatabase
@@ -166,7 +171,7 @@ def Data_Preparation(noise_version=1):
 
     return Dataset
 
-def Data_Preparation_RMN(noise_version=1):
+def Data_Preparation_RMN(n_type=1):
 
     print('Getting the Data ready ... ')
     
@@ -218,14 +223,14 @@ def Data_Preparation_RMN(noise_version=1):
     #####################################
     # Data split
     #####################################
-    if noise_version == 1:
+    if n_type == 1:
         bw_noise_test = bw_noise_channel2_b
         bw_noise_train = bw_noise_channel1_a
         em_noise_test = em_noise_channel2_b
         em_noise_train = em_noise_channel1_a
         ma_noise_test = ma_noise_channel2_b
         ma_noise_train = ma_noise_channel1_a
-    elif noise_version == 2:
+    elif n_type == 2:
         bw_noise_test = bw_noise_channel1_b
         bw_noise_train = bw_noise_channel2_a
         em_noise_test = em_noise_channel1_b
@@ -233,7 +238,7 @@ def Data_Preparation_RMN(noise_version=1):
         ma_noise_test = ma_noise_channel1_b
         ma_noise_train = ma_noise_channel2_a
     else:
-        raise Exception("Sorry, noise_version should be 1 or 2")
+        raise Exception("Sorry, n_type should be 1 or 2")
 
     #####################################
     # QTDatabase
@@ -286,21 +291,23 @@ def Data_Preparation_RMN(noise_version=1):
             else:
                 beats_train.append(b_np)
 
-    def add_mixed_noise(beats, bw_noise, em_noise, ma_noise, is_test=False):
+    def add_mixed_noise(beats, bw_noise, em_noise, ma_noise, is_train=False):
         """
         Add mixed noise combinations to ECG beats
         Args:
             beats: clean ECG beats
             bw_noise, em_noise, ma_noise: three types of noise
-            is_test: whether this is for test set
+            is_train: whether this is for test set
         Returns:
             sn_list: noisy signals
             noise_combinations: noise type combinations used
             snr_values: SNR values used
+            noise_list: detailed noise segments used
         """
         sn_list = []
         noise_combinations = []
         snr_values = []
+        noise_list = []
 
         noise_index_bw = 0
         noise_index_em = 0
@@ -315,49 +322,36 @@ def Data_Preparation_RMN(noise_version=1):
             snr_values.append(snr_db)
             snr_linear = 10**(snr_db / 10.0)
             
-            # Determine noise combination based on binary representation
-            use_bw = (noise_type & 1) != 0  # bit 0: BW noise
-            use_em = (noise_type & 2) != 0  # bit 1: EM noise
-            use_ma = (noise_type & 4) != 0  # bit 2: MA noise
-            
             # Initialize mixed noise
             mixed_noise = np.zeros(samples)
-            noise_count = 0
+            noise_comb = {'bw': None, 'em': None, 'ma': None}
             
             # Add BW noise if selected
-            if use_bw:
+            if noise_type & 1:
                 bw_segment = bw_noise[noise_index_bw:noise_index_bw + samples]
+                noise_comb['bw'] = bw_segment
                 mixed_noise += bw_segment
-                noise_count += 1
                 noise_index_bw += samples
                 if noise_index_bw > (len(bw_noise) - samples):
                     noise_index_bw = 0
             
             # Add EM noise if selected
-            if use_em:
+            if noise_type & 2:
                 em_segment = em_noise[noise_index_em:noise_index_em + samples]
+                noise_comb['em'] = em_segment
                 mixed_noise += em_segment
-                noise_count += 1
                 noise_index_em += samples
                 if noise_index_em > (len(em_noise) - samples):
                     noise_index_em = 0
             
             # Add MA noise if selected
-            if use_ma:
+            if noise_type & 4:
                 ma_segment = ma_noise[noise_index_ma:noise_index_ma + samples]
+                noise_comb['ma'] = ma_segment
                 mixed_noise += ma_segment
-                noise_count += 1
                 noise_index_ma += samples
                 if noise_index_ma > (len(ma_noise) - samples):
                     noise_index_ma = 0
-
-            if noise_count == 0:
-                bw_segment = bw_noise[noise_index_bw:noise_index_bw + samples]
-                mixed_noise = bw_segment
-                noise_index_bw += samples
-                if noise_index_bw > (len(bw_noise) - samples):
-                    noise_index_bw = 0
-                noise_count = 1
             
             # Scale noise based on SNR
             signal_power = np.mean(beats[i]**2)
@@ -372,21 +366,20 @@ def Data_Preparation_RMN(noise_version=1):
             # Generate noisy signal
             signal_noise = beats[i] + scaled_noise
             sn_list.append(signal_noise)
+            noise_list.append(noise_comb)
         
-        return sn_list, noise_combinations, snr_values
+        return sn_list, noise_combinations, snr_values, noise_list if is_train else None
 
     # Add mixed noise to training set
-    sn_train, train_noise_combinations, train_snr_values = add_mixed_noise(
-        beats_train, bw_noise_train, em_noise_train, ma_noise_train, is_test=False)
+    sn_train, train_noise_combinations, train_snr_values, train_noise_list = add_mixed_noise(
+        beats_train, bw_noise_train, em_noise_train, ma_noise_train, is_train=True)
 
     # Add mixed noise to test set
-    sn_test, test_noise_combinations, test_snr_values = add_mixed_noise(
-        beats_test, bw_noise_test, em_noise_test, ma_noise_test, is_test=True)
+    sn_test, test_noise_combinations, test_snr_values, _ = add_mixed_noise(
+        beats_test, bw_noise_test, em_noise_test, ma_noise_test, is_train=False)
 
     np.save(config['rnd_test_path'], test_snr_values)
     np.save(config['rnd_test_path'].replace('.npy', '_noise_combinations.npy'), test_noise_combinations)
-    print('test_snr_values shape: ' + str(np.array(test_snr_values).shape))
-    print('test_noise_combinations shape: ' + str(np.array(test_noise_combinations).shape))
 
     # Convert to numpy arrays and add channel dimension
     X_train = np.array(sn_train)
@@ -400,9 +393,148 @@ def Data_Preparation_RMN(noise_version=1):
 
     X_test = np.expand_dims(X_test, axis=2)
     y_test = np.expand_dims(y_test, axis=2)
+    
+    train_info = {
+        'clean_beats': np.array(beats_train),
+        'noise_types': np.array(train_noise_combinations),
+        'snr_values': np.array(train_snr_values),
+        'mixed_noise': train_noise_list
+    }
 
-    Dataset = [X_train, y_train, X_test, y_test]
+    return X_train, y_train, X_test, y_test, train_info
 
-    print('Dataset ready to use.')
 
-    return Dataset
+class ECGDataset(Dataset):
+    def __init__(self, n_type=1, use_rmn=False, config=None):
+        self.n_type = n_type
+        self.refresh = False
+        self.use_rmn = use_rmn
+        self.config = config
+        self._prepare_data()
+        
+    def _prepare_data(self):
+        if self.use_rmn:
+            X_train, y_train, X_test, y_test, _ = Data_Preparation_RMN(self.n_type)
+        else:
+           X_train, y_train, X_test, y_test, _ = Data_Preparation(self.n_type)
+           
+        self.X_train = torch.FloatTensor(X_train).permute(0,2,1)
+        self.y_train = torch.FloatTensor(y_train).permute(0,2,1)
+        self.X_test = torch.FloatTensor(X_test).permute(0,2,1)
+        self.y_test = torch.FloatTensor(y_test).permute(0,2,1)
+        
+    def _get_loader(self):
+        train_val_set = TensorDataset(self.y_train, self.X_train)
+        test_set = TensorDataset(self.y_test, self.X_test)
+        
+        train_idx, val_idx = train_test_split(list(range(len(train_val_set))), test_size=0.3)
+        train_set = Subset(train_val_set, train_idx)
+        val_set = Subset(train_val_set, val_idx)
+        
+        train_loader = DataLoader(train_set, batch_size=self.config['train']['batch_size'], shuffle=True, drop_last=True)
+        val_loader = DataLoader(val_set, batch_size=self.config['train']['batch_size'])
+        test_loader = DataLoader(test_set, batch_size=self.config['test']['batch_size'])
+        
+        return train_loader, val_loader, test_loader
+    
+    
+class Ada_ECGDataset(ECGDataset):
+    def __init__(self, n_type=1, use_rmn=False, config=None):
+        self.n_type = n_type
+        self.refresh = True
+        self.use_rmn = use_rmn
+        self.config = config
+        self.weights = np.array([1.0, 1.0, 1.0])
+        
+        self._prepare_data()
+        
+    def _prepare_data(self):
+        if self.use_rmn:
+            _, _, X_test, y_test, train_info = Data_Preparation_RMN(self.n_type)
+            self.clean_beats = train_info['clean_beats']
+            self.noise_types = train_info['noise_types']
+            self.snr_values = train_info['snr_values']
+            self.mixed_noise = train_info['mixed_noise']
+        else:
+           _, _, X_test, y_test, = Data_Preparation(self.n_type)
+           
+        self.X_test = torch.FloatTensor(X_test).permute(0,2,1)
+        self.y_test = torch.FloatTensor(y_test).permute(0,2,1)
+        
+    def __len__(self):
+        return len(self.clean_beats)
+    
+    def __getitem__(self, idx):
+        clean = self.clean_beats[idx]
+        noise_type = self.noise_types[idx]
+        snr_db = self.snr_values[idx]
+        noise = self.mixed_noise[idx]
+        
+        mixed_noise = np.zeros(512)
+        if noise_type & 1:
+            mixed_noise += noise['bw'] * self.weights[0]
+        if noise_type & 2:
+            mixed_noise += noise['em'] * self.weights[1]
+        if noise_type & 4:
+            mixed_noise += noise['ma'] * self.weights[2]
+        
+        snr_linear = 10**(snr_db / 10.0)
+        signal_power = np.mean(clean**2)
+        noise_power = np.mean(mixed_noise**2)
+        
+        if noise_power > 0:
+            noise_scaling = np.sqrt(signal_power / (snr_linear * noise_power))
+            scaled_noise = mixed_noise * noise_scaling
+        else:
+            scaled_noise = mixed_noise
+        
+        noisy = clean + scaled_noise
+        
+        y_train = torch.FloatTensor(clean).unsqueeze(0)
+        X_train = torch.FloatTensor(noisy).unsqueeze(0)
+        
+        return y_train, X_train
+    
+    def update_weights(self, weights):
+        self.weights = weights
+
+    def _get_loader(self):
+        test_set = TensorDataset(self.y_test, self.X_test)
+        
+        train_idx, val_idx = train_test_split(list(range(len(self))), test_size=0.3)
+
+        self.train_idx = train_idx
+        self.val_idx = val_idx
+        self.val_noise_types = self.noise_types[val_idx]
+        
+        train_set = Subset(self, train_idx)
+        val_set = Subset(self, val_idx)
+        
+        train_loader = DataLoader(train_set, batch_size=self.config['train']['batch_size'], shuffle=True, drop_last=True)
+        val_loader = DataLoader(val_set, batch_size=self.config['train']['batch_size'])
+        test_loader = DataLoader(test_set, batch_size=self.config['test']['batch_size'])
+
+        return train_loader, val_loader, test_loader
+
+    def update(self, loss_list, batch_size=64):
+        noise_losses = [0, 0, 0]
+        noise_counts = [0, 0, 0]
+        
+        for i, loss in enumerate(loss_list):
+            noise_type = self.val_noise_types[i]
+            if noise_type & 1:
+                noise_losses[0] += loss
+                noise_counts[0] += 1
+            if noise_type & 2:
+                noise_losses[1] += loss
+                noise_counts[1] += 1
+            if noise_type & 4:
+                noise_losses[2] += loss
+                noise_counts[2] += 1
+        
+        weights = F.softmax(torch.tensor([l/c for l, c in zip(noise_losses, noise_counts)]), dim=0).numpy()
+        self.update_weights(weights)
+            # print(f"Updated weights: BW={weights[0]:.3f}, EM={weights[1]:.3f}, MA={weights[2]:.3f}")
+        
+        train_set = Subset(self, self.train_idx)
+        return DataLoader(train_set, batch_size=batch_size, shuffle=True, drop_last=True)

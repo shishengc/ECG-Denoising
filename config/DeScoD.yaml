@@ -4,6 +4,7 @@
 train:
   feats: 80
   epochs: 400
+  val_interval: 5
   batch_size: 96 
 
   lr_scheduler:

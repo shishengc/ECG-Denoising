@@ -2,10 +2,10 @@
 #type: args
 
 train:
-  epochs: 100000
+  steps: 100000
   batch_size: 64
   gradient_accumulate_every: 1
-  valid_epoch_interval: 5000
+  val_interval: 5
   condition: true
   num_unet: 2
   use_ema: true

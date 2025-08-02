@@ -1,5 +1,6 @@
 train:
   epochs: 500
+  val_interval: 5
   batch_size: 64
 
   optimizer:
