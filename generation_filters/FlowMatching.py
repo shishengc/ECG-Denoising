@@ -10,7 +10,6 @@ from torch import nn
 from torchdiffeq import odeint
 from .utils import default, exists
 
-from .AttnUnet import AutoEncoder
 class CFM(nn.Module):
     def __init__(
         self,
@@ -31,8 +30,6 @@ class CFM(nn.Module):
         self.sampling_timesteps = sampling_timesteps
         self.default_use_ode = default_use_ode
         self.loss_type = loss_type
-        # self.autoencoder = autoencoder
-
 
     @property
     def device(self):
@@ -61,7 +58,6 @@ class CFM(nn.Module):
         steps = default(steps, self.sampling_timesteps)
 
         cond = cond.to(next(self.parameters()).dtype)
-        # cond = self.autoencoder.encode(cond)[0] # Add encoder
      
         step_cond = cond
 
@@ -85,7 +81,6 @@ class CFM(nn.Module):
 
         sampled = trajectory[-1]
         out = sampled
-        # out = self.autoencoder.decode(out) # Add decoder
 
         return out, trajectory
 
@@ -116,19 +111,12 @@ class CFM(nn.Module):
         x1 = clean
         x0 = torch.randn_like(x1)
         cond = input
-        
-        # VAE AutoEncoder
-        # with torch.no_grad():
-        #     x1 = self.autoencoder.encode(clean)[0]
-            # x0 = self.autoencoder.encode(input)[0]
-            # x0 = torch.randn_like(x1)
 
         # x0 = input
         time = torch.rand((batch,), dtype=dtype, device=self.device)
         t = time.unsqueeze(-1).unsqueeze(-1)
         φ = (1 - t) * x0 + t * x1
         flow = x1 - x0
-        # cond = self.autoencoder.encode(input)[0]
 
         φ = torch.cat((φ, cond), dim=1) if exists(cond) else φ
         pred = self.base_model(
@@ -136,8 +124,7 @@ class CFM(nn.Module):
         )
 
         loss = F.mse_loss(pred, flow, reduction="none")
-        # vae_loss = self.vae_loss(recon_x0, input, mean, logvar)
-        # loss = loss.mean(dim=2).squeeze(1) * self.loss_weight(t=time)
+
         loss = loss.mean(dim=(1,2)) * self.loss_weight(t=time)
         return loss.mean(), cond, pred
     

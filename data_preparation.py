@@ -164,12 +164,9 @@ def Data_Preparation(n_type=1):
     X_test = np.expand_dims(X_test, axis=2)
     y_test = np.expand_dims(y_test, axis=2)
 
-
-    Dataset = [X_train, y_train, X_test, y_test]
-
     print('Dataset ready to use.')
 
-    return Dataset
+    return X_train, y_train, X_test, y_test
 
 def Data_Preparation_RMN(n_type=1):
 
@@ -416,7 +413,7 @@ class ECGDataset(Dataset):
         if self.use_rmn:
             X_train, y_train, X_test, y_test, _ = Data_Preparation_RMN(self.n_type)
         else:
-           X_train, y_train, X_test, y_test, _ = Data_Preparation(self.n_type)
+           X_train, y_train, X_test, y_test = Data_Preparation(self.n_type)
            
         self.X_train = torch.FloatTensor(X_train).permute(0,2,1)
         self.y_train = torch.FloatTensor(y_train).permute(0,2,1)
@@ -456,7 +453,7 @@ class Ada_ECGDataset(ECGDataset):
             self.snr_values = train_info['snr_values']
             self.mixed_noise = train_info['mixed_noise']
         else:
-           _, _, X_test, y_test, = Data_Preparation(self.n_type)
+           _, _, X_test, y_test = Data_Preparation(self.n_type)
            
         self.X_test = torch.FloatTensor(X_test).permute(0,2,1)
         self.y_test = torch.FloatTensor(y_test).permute(0,2,1)

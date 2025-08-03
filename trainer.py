@@ -555,7 +555,7 @@ def train_flow(model, config, dataset, device, foldername="", log_dir=None):
                                 it.set_postfix(
                                 ordered_dict={
                                     "valid_avg_loss": f"{avg_loss_valid / batch_no:.4f}",
-                                    "Steo": step,
+                                    "Step": step,
                                 },
                                 refresh=True,
                                 )
