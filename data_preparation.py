@@ -534,7 +534,7 @@ class Ada_ECGDataset(ECGDataset):
         
         weights = F.softmax(torch.tensor([l/c for l, c in zip(noise_losses, noise_counts)]), dim=0).numpy()
         self.update_weights(weights)
-            # print(f"Updated weights: BW={weights[0]:.3f}, EM={weights[1]:.3f}, MA={weights[2]:.3f}")
+        # print(f"Updated weights: BW={weights[0]:.3f}, EM={weights[1]:.3f}, MA={weights[2]:.3f}")
         
         train_set = Subset(self, self.train_idx)
         return DataLoader(train_set, batch_size=batch_size, shuffle=True, drop_last=True)

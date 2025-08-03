@@ -122,7 +122,6 @@ def evaluate_model(args):
             model.eval()
 
             y_pred = []
-            trajectory = []
             print(f"Evaluating {args.exp_name} model for noise type {n_type}...")
             with torch.no_grad():
                 for clean_batch, noisy_batch in tqdm(test_loader):
@@ -159,8 +158,7 @@ def evaluate_model(args):
                                 denoised_batch += denoised
                             denoised_batch = denoised_batch / shots
                         else:
-                            [denoised_batch, denoised_trajectory] = model.sample(noisy_batch)
-                            denoised_trajectory = torch.cat((denoised_trajectory, clean_batch.unsqueeze(0)), dim=0)
+                            [denoised_batch, _] = model.sample(noisy_batch)
                         
                     elif args.exp_name == "ECG_GAN":
                         batch_size = noisy_batch.shape[0]
@@ -171,12 +169,9 @@ def evaluate_model(args):
                         denoised_batch = model(noisy_batch)
                     
                     y_pred.append(denoised_batch.cpu().numpy())
-                    trajectory.append(denoised_trajectory.cpu().numpy().transpose(1, 0, 2, 3))
             
             y_pred = np.concatenate(y_pred, axis=0)
             y_pred = np.transpose(y_pred, (0, 2, 1))
-            trajectory = np.concatenate(trajectory, axis=0)
-            np.save(f"results/{args.exp_name}_trajectory_{n_type}.npy", trajectory)
 
         metrics = {
             "SSD": SSD(y_test, y_pred),
@@ -201,7 +196,7 @@ def evaluate_model(args):
 
     if all_noise_levels:
         n_level = np.concatenate(all_noise_levels)
-        # segs = [0.2, 0.6, 1.0, 1.5, 2.0]
+
         segs = [-6, 0, 6, 12, 18]
         segmented_results = {}
         
