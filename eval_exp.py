@@ -20,7 +20,7 @@ def evaluate_model(args):
     
     for n_type in [1, 2]:
         # Load Data
-        [_, _, X_test, y_test] = Data_Preparation(n_type) if not args.use_rmn else Data_Preparation_RMN(n_type)
+        [_, _, X_test, y_test, _] = Data_Preparation(n_type) if not args.use_rmn else Data_Preparation_RMN(n_type)
         
         try:
             noise_level = np.load('./Data/prepared/rnd_test.npy')
@@ -117,11 +117,12 @@ def evaluate_model(args):
                 from generation_filters.ECGAN import Generator
                 model = Generator(input_channels=config['generator']['feats']).to(args.device)
 
-            model_path = foldername + "/model.pth"
+            model_path = foldername + "/model_4_v0.pth"
             model.load_state_dict(torch.load(model_path, map_location=args.device, weights_only=True))
             model.eval()
 
             y_pred = []
+            y_true = []
             print(f"Evaluating {args.exp_name} model for noise type {n_type}...")
             with torch.no_grad():
                 for clean_batch, noisy_batch in tqdm(test_loader):
@@ -169,8 +170,19 @@ def evaluate_model(args):
                         denoised_batch = model(noisy_batch)
                     
                     y_pred.append(denoised_batch.cpu().numpy())
+                    y_true.append(clean_batch.cpu().numpy())
             
             y_pred = np.concatenate(y_pred, axis=0)
+            y_true = np.concatenate(y_true, axis=0)
+            
+            if args.save_samples:   
+                results = {
+                    'y_pred': y_pred,
+                    'y_true': y_true,
+                    'x_input': X_test
+                }
+                np.save(f"results/results_{n_type}.npy", results)
+            
             y_pred = np.transpose(y_pred, (0, 2, 1))
 
         metrics = {
@@ -215,7 +227,7 @@ def evaluate_model(args):
                 std_val = np.std(seg_values)
                 segmented_results[name][seg_label] = f"{mean_val:.3f}±{std_val:.3f}"
 
-    with open(f"results/{args.exp_name}_results.csv", 'w', newline='') as f:
+    with open(f"results/Metrics/{args.exp_name}_results.csv", 'w', newline='') as f:
         writer = csv.writer(f)
 
         headers = ["Model", "SSD (au) ↓", "MAD (au) ↓", "PRD (%) ↓", "Cosine Sim ↑", "SNR out (dB) ↑", "ImSNR (dB) ↑"]
@@ -238,7 +250,6 @@ def evaluate_model(args):
                 writer.writerow(row)
 
     print(f"Evaluation complete for {args.exp_name}")
-    print(f"Results saved to results/{args.exp_name}_results.csv")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ECG Denoising Evaluation")
@@ -259,6 +270,7 @@ if __name__ == "__main__":
     parser.add_argument('--device', default='cuda:0' if torch.cuda.is_available() else 'cpu', help='Device')
     parser.add_argument('--use_rmn', type=bool, default=True, help='Use Random Mixed Noise')
     parser.add_argument('--shots', type=int, default=1, help='Number of shots for Diffusion model')
+    parser.add_argument('--save_samples', type=bool, default=False)
     
     args = parser.parse_args()
     
