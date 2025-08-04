@@ -26,7 +26,7 @@ if __name__ == "__main__":
     parser.add_argument('--device', default='cuda:0' if torch.cuda.is_available() else 'cpu', help='Device')
     parser.add_argument('--use_rmn', type=bool, default=True, help='Add Random Mixed Noise')
     parser.add_argument('--n_type', type=int, default=1, help='noise version')
-    parser.add_argument('--adaboost', type=bool, default=True)
+    parser.add_argument('--adaboost', type=bool, default=False)
 
     args = parser.parse_args()
     
@@ -77,9 +77,16 @@ if __name__ == "__main__":
         from generation_filters.FlowMatching import CFM
         
         base_model = Unet(**config['base_model']).to(args.device)
-        model = CFM(base_model=base_model, **config['flow']).to(args.device)
         
-        train_flow(model, config['train'], dataset, args.device, foldername=foldername, log_dir=log_dir)
+        model_raw = CFM(base_model=base_model, wavelet_cond=False, **config['flow']).to(args.device)
+        model_raw.load_state_dict(torch.load('./check_points/FlowMatching/noise_type_1/model_raw.pth', map_location=args.device))
+        model_raw.eval()
+        for param in model_raw.parameters():
+            param.requires_grad = False
+        
+        model= CFM(base_model=base_model, wavelet_cond=True, **config['flow']).to(args.device)
+        
+        train_flow(model, model_raw, config['train'], dataset, args.device, foldername=foldername, log_dir=log_dir)
         
     # DRNN
     elif (args.exp_name == "DRNN"):

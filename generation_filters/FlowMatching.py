@@ -10,6 +10,37 @@ from torch import nn
 from torchdiffeq import odeint
 from .utils import default, exists
 
+import pywt
+import numpy as np
+class SimpleWaveletExtractor:
+
+    def __init__(self, wavelet='db6', levels=8, fs=360):
+        self.wavelet = wavelet
+        self.levels = levels
+        self.fs = fs
+    
+    def extract_components(self, ecg_signal):
+
+        coeffs = pywt.wavedec(ecg_signal, self.wavelet, level=self.levels)
+
+        d4_d8_coeffs = [np.zeros_like(coeffs[0])]
+        d4_d8_coeffs.extend([coeffs[i] for i in range(1, 6)])
+        d4_d8_coeffs.extend([np.zeros_like(coeffs[i]) for i in range(6, 9)])
+        d4_d8_signal = pywt.waverec(d4_d8_coeffs, self.wavelet)
+
+        d1_d8_coeffs = [np.zeros_like(coeffs[0])]
+        d1_d8_coeffs.extend([coeffs[i] for i in range(1, 9)])
+        d1_d8_signal = pywt.waverec(d1_d8_coeffs, self.wavelet)
+        
+        # return {
+        #     'ground_truth': ecg_signal,
+        #     'd4_d8_signal': d4_d8_signal,
+        #     'd1_d8_signal': d1_d8_signal
+        # }
+        return d4_d8_signal
+
+
+
 class CFM(nn.Module):
     def __init__(
         self,
@@ -19,7 +50,8 @@ class CFM(nn.Module):
         num_channels=None,
         sampling_timesteps: int = 10,
         default_use_ode: bool = True,
-        loss_type: str = "mean"
+        loss_type: str = "mean",
+        wavelet_cond: bool = False
     ):
         super().__init__()
         self.num_channels = num_channels
@@ -30,6 +62,11 @@ class CFM(nn.Module):
         self.sampling_timesteps = sampling_timesteps
         self.default_use_ode = default_use_ode
         self.loss_type = loss_type
+        
+        if wavelet_cond:
+            self.wavelet_extractor = SimpleWaveletExtractor()
+        else:
+            self.wavelet_extractor = None
 
     @property
     def device(self):
@@ -51,18 +88,17 @@ class CFM(nn.Module):
         cond,
         *,
         steps = None,
-        no_ref_audio=False,
         use_ode: bool | None = None
     ):
         use_ode = self.default_use_ode if use_ode is None else use_ode
         steps = default(steps, self.sampling_timesteps)
 
         cond = cond.to(next(self.parameters()).dtype)
-     
-        step_cond = cond
-
-        if no_ref_audio:
-            cond = torch.zeros_like(cond)
+        
+        if self.wavelet_extractor is not None:
+            cond = cond.cpu().numpy()
+            cond = self.wavelet_extractor.extract_components(cond)
+            cond = torch.tensor(cond, dtype=next(self.parameters()).dtype, device=self.device)
 
         def fn(t, x):
             nonlocal cond
@@ -72,15 +108,14 @@ class CFM(nn.Module):
         y0 = torch.randn_like(cond)
         # y0 = cond
         t_start = 0
-        t = torch.linspace(t_start, 1, steps + 1, device=self.device, dtype=step_cond.dtype)
+        t = torch.linspace(t_start, 1, steps + 1, device=self.device, dtype=cond.dtype)
         
         if use_ode:
             trajectory = odeint(fn, y0, t,** self.odeint_kwargs)
         else:
             trajectory = self._iterative_sample(fn, y0, t, steps, cond)
 
-        sampled = trajectory[-1]
-        out = sampled
+        out = trajectory[-1]
 
         return out, trajectory
 
@@ -110,9 +145,13 @@ class CFM(nn.Module):
 
         x1 = clean
         x0 = torch.randn_like(x1)
-        cond = input
+        if self.wavelet_extractor is not None:
+            cond = input.cpu().numpy()
+            cond = self.wavelet_extractor.extract_components(cond)
+            cond = torch.tensor(cond, dtype=next(self.parameters()).dtype, device=self.device)
+        else:
+            cond = input
 
-        # x0 = input
         time = torch.rand((batch,), dtype=dtype, device=self.device)
         t = time.unsqueeze(-1).unsqueeze(-1)
         φ = (1 - t) * x0 + t * x1
