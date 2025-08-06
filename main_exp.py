@@ -77,16 +77,18 @@ if __name__ == "__main__":
         from generation_filters.FlowMatching import CFM
         
         base_model = Unet(**config['base_model']).to(args.device)
+        base_model_2 = Unet(**config['base_model_2']).to(args.device)
         
-        model_raw = CFM(base_model=base_model, wavelet_cond=False, **config['flow']).to(args.device)
-        model_raw.load_state_dict(torch.load('./check_points/FlowMatching/noise_type_1/model_raw.pth', map_location=args.device))
-        model_raw.eval()
-        for param in model_raw.parameters():
+        model = CFM(base_model=base_model, wavelet_cond=False, **config['flow']).to(args.device)
+        model_path = foldername + 'model_35000.pth'
+        model.load_state_dict(torch.load(model_path, map_location=args.device, weights_only=True))
+        model.eval()
+        for param in model.parameters():
             param.requires_grad = False
         
-        model= CFM(base_model=base_model, wavelet_cond=True, **config['flow']).to(args.device)
+        model_2= CFM(base_model=base_model_2, wavelet_cond=True, **config['flow']).to(args.device)
         
-        train_flow(model, model_raw, config['train'], dataset, args.device, foldername=foldername, log_dir=log_dir)
+        train_flow(model_2, model, config['train'], dataset, args.device, foldername=foldername, log_dir=log_dir)
         
     # DRNN
     elif (args.exp_name == "DRNN"):

@@ -2,7 +2,7 @@
 #type: args
 
 train:
-  steps: 25000
+  steps: 30000
   batch_size: 64
   gradient_accumulate_every: 1
   val_interval: 1000
@@ -11,7 +11,7 @@ train:
 
   optimizer:
     type: "AdamW"
-    lr: 7.5e-5
+    lr: 9.0e-5
     weight_decay: 0.
 
 base_model:
@@ -21,6 +21,12 @@ base_model:
   self_condition: false
   condition: true
 
+base_model_2:
+  dim: 64
+  out_dim: 1
+  channels: 1
+  self_condition: true
+  condition: true
 
 flow:
   sigma: 0.0

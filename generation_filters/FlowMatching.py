@@ -28,15 +28,6 @@ class SimpleWaveletExtractor:
         d4_d8_coeffs.extend([np.zeros_like(coeffs[i]) for i in range(6, 9)])
         d4_d8_signal = pywt.waverec(d4_d8_coeffs, self.wavelet)
 
-        d1_d8_coeffs = [np.zeros_like(coeffs[0])]
-        d1_d8_coeffs.extend([coeffs[i] for i in range(1, 9)])
-        d1_d8_signal = pywt.waverec(d1_d8_coeffs, self.wavelet)
-        
-        # return {
-        #     'ground_truth': ecg_signal,
-        #     'd4_d8_signal': d4_d8_signal,
-        #     'd1_d8_signal': d1_d8_signal
-        # }
         return d4_d8_signal
 
 
@@ -94,6 +85,7 @@ class CFM(nn.Module):
         steps = default(steps, self.sampling_timesteps)
 
         cond = cond.to(next(self.parameters()).dtype)
+        self_cond = cond
         
         if self.wavelet_extractor is not None:
             cond = cond.cpu().numpy()
@@ -101,9 +93,9 @@ class CFM(nn.Module):
             cond = torch.tensor(cond, dtype=next(self.parameters()).dtype, device=self.device)
 
         def fn(t, x):
-            nonlocal cond
+            nonlocal cond, self_cond
             x = torch.cat((x, cond), dim=1) if exists(cond) else x
-            return self.base_model(x=x, time=t.expand(x.shape[0]), x_self_cond=cond)
+            return self.base_model(x=x, time=t.expand(x.shape[0]), x_self_cond=self_cond)
         
         y0 = torch.randn_like(cond)
         # y0 = cond
@@ -145,6 +137,8 @@ class CFM(nn.Module):
 
         x1 = clean
         x0 = torch.randn_like(x1)
+        self_cond = input
+        
         if self.wavelet_extractor is not None:
             cond = input.cpu().numpy()
             cond = self.wavelet_extractor.extract_components(cond)
@@ -159,7 +153,7 @@ class CFM(nn.Module):
 
         φ = torch.cat((φ, cond), dim=1) if exists(cond) else φ
         pred = self.base_model(
-            x=φ, time=time, x_self_cond=cond
+            x=φ, time=time, x_self_cond=self_cond
         )
 
         loss = F.mse_loss(pred, flow, reduction="none")
