@@ -80,7 +80,7 @@ if __name__ == "__main__":
         base_model_2 = Unet(**config['base_model_2']).to(args.device)
         
         model = CFM(base_model=base_model, wavelet_cond=False, **config['flow']).to(args.device)
-        model_path = foldername + 'model_35000.pth'
+        model_path = foldername + 'model_40000.pth'
         model.load_state_dict(torch.load(model_path, map_location=args.device, weights_only=True))
         model.eval()
         for param in model.parameters():

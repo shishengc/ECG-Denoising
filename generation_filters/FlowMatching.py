@@ -12,6 +12,7 @@ from .utils import default, exists
 
 import pywt
 import numpy as np
+from scipy.signal import savgol_filter
 class SimpleWaveletExtractor:
 
     def __init__(self, wavelet='db6', levels=8, fs=360):
@@ -30,6 +31,27 @@ class SimpleWaveletExtractor:
 
         return d4_d8_signal
 
+class SavgolFilterExtractor:
+    def __init__(self, window_length=19, polyorder=2):
+        self.window_length = window_length
+        self.polyorder = polyorder
+    
+    def extract_components(self, ecg_signal):
+        if not isinstance(ecg_signal, np.ndarray):
+            ecg_signal = np.array(ecg_signal)
+        
+        B, C, L = ecg_signal.shape
+        filtered_signal = np.zeros_like(ecg_signal)
+        
+        for b in range(B):
+            for c in range(C):
+                filtered_signal[b, c, :] = savgol_filter(
+                    ecg_signal[b, c, :], 
+                    window_length=self.window_length, 
+                    polyorder=self.polyorder
+                )
+                
+        return filtered_signal
 
 
 class CFM(nn.Module):
@@ -55,7 +77,8 @@ class CFM(nn.Module):
         self.loss_type = loss_type
         
         if wavelet_cond:
-            self.wavelet_extractor = SimpleWaveletExtractor()
+            # self.wavelet_extractor = SimpleWaveletExtractor()
+            self.wavelet_extractor = SavgolFilterExtractor()
         else:
             self.wavelet_extractor = None
 
@@ -158,6 +181,8 @@ class CFM(nn.Module):
 
         loss = F.mse_loss(pred, flow, reduction="none")
 
-        loss = loss.mean(dim=(1,2)) * self.loss_weight(t=time)
+        # loss = loss.mean(dim=(1,2)) * self.loss_weight(t=time)
+        loss_weight = F.softmax(x1, dim=-1)
+        loss = loss * loss_weight
         return loss.mean(), cond, pred
     

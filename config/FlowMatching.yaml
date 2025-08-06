@@ -25,7 +25,7 @@ base_model_2:
   dim: 64
   out_dim: 1
   channels: 1
-  self_condition: true
+  self_condition: false
   condition: true
 
 flow:
