@@ -20,21 +20,20 @@ class SimpleWaveletExtractor:
         self.levels = levels
         self.fs = fs
     
-    def extract_components(self, ecg_signal):
-
+    def frequency_decomposition(self, ecg_signal):
         coeffs = pywt.wavedec(ecg_signal, self.wavelet, level=self.levels)
+    
+        low_freq_coeffs = [coeffs[0]]
+        low_freq_coeffs.extend([coeffs[i] if 1 <= i <= self.levels - 3 
+                                else np.zeros_like(coeffs[i]) for i in range(1, self.levels + 1)])
+        low_ = pywt.waverec(low_freq_coeffs, self.wavelet)
 
-        d3_d8_coeffs = [np.zeros_like(coeffs[0])]
-        d3_d8_coeffs.extend([coeffs[i] for i in range(1, 6)])
-        d3_d8_coeffs.extend([np.zeros_like(coeffs[i]) for i in range(6, 9)])
-        d3_d8_signal = pywt.waverec(d3_d8_coeffs, self.wavelet)
+        high_freq_coeffs = [np.zeros_like(coeffs[0])]
+        high_freq_coeffs.extend([coeffs[i] if i >= self.levels - 2 
+                                 else np.zeros_like(coeffs[i]) for i in range(1, self.levels + 1)])
+        high_ = pywt.waverec(high_freq_coeffs, self.wavelet)
         
-        d1_d2_coeffs = [np.zeros_like(coeffs[0])]
-        d1_d2_coeffs.extend([np.zeros_like(coeffs[i]) for i in range(1, self.levels-2)])
-        d1_d2_coeffs.extend([coeffs[i] for i in range(self.levels-2, self.levels+1)])
-        d1_d2_signal = pywt.waverec(d1_d2_coeffs, self.wavelet)
-
-        return d3_d8_signal, d1_d2_signal
+        return low_, high_
 
 class SavgolFilterExtractor:
     def __init__(self, window_length=19, polyorder=2):
