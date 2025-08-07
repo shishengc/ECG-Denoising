@@ -24,12 +24,17 @@ class SimpleWaveletExtractor:
 
         coeffs = pywt.wavedec(ecg_signal, self.wavelet, level=self.levels)
 
-        d4_d8_coeffs = [np.zeros_like(coeffs[0])]
-        d4_d8_coeffs.extend([coeffs[i] for i in range(1, 6)])
-        d4_d8_coeffs.extend([np.zeros_like(coeffs[i]) for i in range(6, 9)])
-        d4_d8_signal = pywt.waverec(d4_d8_coeffs, self.wavelet)
+        d3_d8_coeffs = [np.zeros_like(coeffs[0])]
+        d3_d8_coeffs.extend([coeffs[i] for i in range(1, 6)])
+        d3_d8_coeffs.extend([np.zeros_like(coeffs[i]) for i in range(6, 9)])
+        d3_d8_signal = pywt.waverec(d3_d8_coeffs, self.wavelet)
+        
+        d1_d2_coeffs = [np.zeros_like(coeffs[0])]
+        d1_d2_coeffs.extend([np.zeros_like(coeffs[i]) for i in range(1, self.levels-2)])
+        d1_d2_coeffs.extend([coeffs[i] for i in range(self.levels-2, self.levels+1)])
+        d1_d2_signal = pywt.waverec(d1_d2_coeffs, self.wavelet)
 
-        return d4_d8_signal
+        return d3_d8_signal, d1_d2_signal
 
 class SavgolFilterExtractor:
     def __init__(self, window_length=19, polyorder=2):
@@ -77,8 +82,8 @@ class CFM(nn.Module):
         self.loss_type = loss_type
         
         if wavelet_cond:
-            # self.wavelet_extractor = SimpleWaveletExtractor()
-            self.wavelet_extractor = SavgolFilterExtractor()
+            self.wavelet_extractor = SimpleWaveletExtractor()
+            # self.wavelet_extractor = SavgolFilterExtractor()
         else:
             self.wavelet_extractor = None
 
@@ -100,6 +105,7 @@ class CFM(nn.Module):
     def sample(
         self,
         cond,
+        self_cond=None,
         *,
         steps = None,
         use_ode: bool | None = None
@@ -108,12 +114,13 @@ class CFM(nn.Module):
         steps = default(steps, self.sampling_timesteps)
 
         cond = cond.to(next(self.parameters()).dtype)
-        self_cond = cond
+        cond_low = None
         
         if self.wavelet_extractor is not None:
             cond = cond.cpu().numpy()
-            cond = self.wavelet_extractor.extract_components(cond)
-            cond = torch.tensor(cond, dtype=next(self.parameters()).dtype, device=self.device)
+            cond = self.wavelet_extractor.extract_components(cond)[0]
+            cond_low = torch.tensor(cond, dtype=next(self.parameters()).dtype, device=self.device)
+            cond = self_cond - cond_low
 
         def fn(t, x):
             nonlocal cond, self_cond
@@ -132,7 +139,7 @@ class CFM(nn.Module):
 
         out = trajectory[-1]
 
-        return out, trajectory
+        return out, cond_low
 
     def _iterative_sample(self, fn, y0, t, steps, cond):
         dt = t[1] - t[0]
@@ -154,18 +161,22 @@ class CFM(nn.Module):
             
         return torch.stack(trajectory)
 
-    def forward(self, input, clean):
+    def forward(self, input, clean, self_cond=None):
 
         batch, _, dtype, device, _ = *input.shape[:2], input.dtype, self.device, self.sigma
 
         x1 = clean
         x0 = torch.randn_like(x1)
-        self_cond = input
         
         if self.wavelet_extractor is not None:
             cond = input.cpu().numpy()
-            cond = self.wavelet_extractor.extract_components(cond)
-            cond = torch.tensor(cond, dtype=next(self.parameters()).dtype, device=self.device)
+            cond = self.wavelet_extractor.extract_components(cond)[0]
+            cond = torch.tensor(cond, dtype=next(self.parameters()).dtype, device=self.device) # input: d3-d8
+            cond = self_cond - cond
+            
+            x1 = x1.cpu().numpy()
+            x1 = self.wavelet_extractor.extract_components(x1)[1]
+            x1 = torch.tensor(x1, dtype=next(self.parameters()).dtype, device=self.device)
         else:
             cond = input
 
@@ -182,7 +193,7 @@ class CFM(nn.Module):
         loss = F.mse_loss(pred, flow, reduction="none")
 
         # loss = loss.mean(dim=(1,2)) * self.loss_weight(t=time)
-        loss_weight = F.softmax(x1, dim=-1)
-        loss = loss * loss_weight
+        # loss_weight = F.softmax(torch.abs(x1), dim=-1)
+        # loss = loss * loss_weight
         return loss.mean(), cond, pred
     

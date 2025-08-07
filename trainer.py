@@ -514,8 +514,8 @@ def train_flow(model, model_1, config, dataset, device, foldername="", log_dir=N
 
                 # Forward loss
                 with torch.no_grad():
-                    [noisy_batch, _] = model_1.sample(noisy_batch)
-                loss, _, _ = model(noisy_batch, clean_batch)
+                    [noisy_batch_1, _] = model_1.sample(noisy_batch)
+                loss, _, _ = model(noisy_batch_1, clean_batch, self_cond=noisy_batch)
                 loss/= config['gradient_accumulate_every']
                 total_loss += loss.item()
                 
@@ -545,8 +545,9 @@ def train_flow(model, model_1, config, dataset, device, foldername="", log_dir=N
                             for batch_no, (clean_batch, noisy_batch) in enumerate(it, start=1):
                                 clean_batch, noisy_batch = clean_batch.to(device), noisy_batch.to(device)
 
-                                [noisy_batch, _] = model_1.sample(noisy_batch)
-                                [denoised_batch, _] = ema.ema_model.sample(noisy_batch)
+                                [noisy_batch_1, _] = model_1.sample(noisy_batch)
+                                [denoised_batch, denoised_batch_low] = ema.ema_model.sample(noisy_batch_1, self_cond=noisy_batch)
+                                denoised_batch += denoised_batch_low
                                 
                                 if dataset.refresh == False:
                                     loss = SSDLoss()(denoised_batch, clean_batch).item()
