@@ -20,7 +20,7 @@ class SimpleWaveletExtractor:
         self.levels = levels
         self.fs = fs
     
-    def frequency_decomposition(self, ecg_signal):
+    def extract_components(self, ecg_signal):
         coeffs = pywt.wavedec(ecg_signal, self.wavelet, level=self.levels)
     
         low_freq_coeffs = [coeffs[0]]
@@ -119,7 +119,8 @@ class CFM(nn.Module):
             cond = cond.cpu().numpy()
             cond = self.wavelet_extractor.extract_components(cond)[0]
             cond_low = torch.tensor(cond, dtype=next(self.parameters()).dtype, device=self.device)
-            cond = self_cond - cond_low
+            # cond = self_cond - cond_low
+            cond = cond_low
 
         def fn(t, x):
             nonlocal cond, self_cond
@@ -171,7 +172,7 @@ class CFM(nn.Module):
             cond = input.cpu().numpy()
             cond = self.wavelet_extractor.extract_components(cond)[0]
             cond = torch.tensor(cond, dtype=next(self.parameters()).dtype, device=self.device) # input: d3-d8
-            cond = self_cond - cond
+            # cond = self_cond - cond
             
             x1 = x1.cpu().numpy()
             x1 = self.wavelet_extractor.extract_components(x1)[1]
