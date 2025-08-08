@@ -3,7 +3,7 @@
 
 train:
   steps: 30000
-  batch_size: 64
+  batch_size: 128
   gradient_accumulate_every: 1
   val_interval: 1000
   condition: true
@@ -18,22 +18,17 @@ base_model:
   dim: 64
   out_dim: 1
   channels: 1
+  z_channels: 1
+  condition: true
   self_condition: false
-  condition: true
-
-base_model_2:
-  dim: 64
-  out_dim: 1
-  channels: 1
-  self_condition: true
-  condition: true
 
 flow:
-  sigma: 0.0
+  sigma_max: 1.0
+  sigma_min: 1e-5
   odeint_kwargs:
     method: "euler"
   num_channels: 1
-  sampling_timesteps: 4
+  sampling_timesteps: 5
   default_use_ode: false
 
 test:

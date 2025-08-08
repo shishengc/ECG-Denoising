@@ -7,7 +7,7 @@ from tqdm import tqdm
 from utils.loss_function import SSDLoss, CombinedSSDMADLoss, MADLoss, HuberFreqLoss
 from utils.train_utils import LRScheduler, EarlyStopping
 
-def train_diffusion(model, config, dataset, device, valid_epoch_interval=5, foldername="", log_dir=None):
+def train_diffusion(model, config, dataset, device, foldername="", log_dir=None):
 
     optimizer_config = config['optimizer']
     optimizer_type = getattr(optim, optimizer_config.get("type", "Adam"))
@@ -474,7 +474,7 @@ def train_eddm(model, config, dataset, device, foldername="", log_dir=None):
     
 
 
-def train_flow(model, model_1, config, dataset, device, foldername="", log_dir=None):
+def train_flow(model, config, dataset, device, foldername="", log_dir=None):
     from ema_pytorch import EMA
     
     optimizer_config = config['optimizer']
@@ -513,9 +513,7 @@ def train_flow(model, model_1, config, dataset, device, foldername="", log_dir=N
                     clean_batch, noisy_batch = clean_batch.to(device), noisy_batch.to(device)
 
                 # Forward loss
-                with torch.no_grad():
-                    [noisy_batch_1, _] = model_1.sample(noisy_batch)
-                loss, _, _ = model(noisy_batch_1, clean_batch, self_cond=noisy_batch)
+                loss, _ = model(noisy_batch, clean_batch, self_cond=noisy_batch)
                 loss/= config['gradient_accumulate_every']
                 total_loss += loss.item()
                 
@@ -545,9 +543,7 @@ def train_flow(model, model_1, config, dataset, device, foldername="", log_dir=N
                             for batch_no, (clean_batch, noisy_batch) in enumerate(it, start=1):
                                 clean_batch, noisy_batch = clean_batch.to(device), noisy_batch.to(device)
 
-                                [noisy_batch_1, _] = model_1.sample(noisy_batch)
-                                [denoised_batch, denoised_batch_low] = ema.ema_model.sample(noisy_batch_1, self_cond=noisy_batch)
-                                denoised_batch += denoised_batch_low
+                                [denoised_batch, _] = ema.ema_model.sample(noisy_batch, self_cond=noisy_batch)
                                 
                                 if dataset.refresh == False:
                                     loss = SSDLoss()(denoised_batch, clean_batch).item()

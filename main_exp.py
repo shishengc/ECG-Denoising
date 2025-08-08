@@ -74,21 +74,19 @@ if __name__ == "__main__":
     # FlowMatching
     if (args.exp_name == "FlowMatching"):
         from generation_filters.FlowBackbone import Unet
+        from dl_filters.CBAM_DAE import AttentionSkipDAE2
         from generation_filters.FlowMatching import CFM
         
         base_model = Unet(**config['base_model']).to(args.device)
-        base_model_2 = Unet(**config['base_model_2']).to(args.device)
+        autoencoder = AttentionSkipDAE2()
+        autoencoder.load_state_dict(torch.load('./check_points/CBAM_DAE/noise_type_1/model.pth', map_location=args.device))
+        autoencoder.eval()
+        for p in autoencoder.parameters():
+            p.requires_grad = False
+
+        model = CFM(base_model=base_model, autoencoder=autoencoder, **config['flow']).to(args.device)
         
-        model = CFM(base_model=base_model, wavelet_cond=False, **config['flow']).to(args.device)
-        model_path = foldername + 'model_40000.pth'
-        model.load_state_dict(torch.load(model_path, map_location=args.device, weights_only=True))
-        model.eval()
-        for param in model.parameters():
-            param.requires_grad = False
-        
-        model_2= CFM(base_model=base_model_2, wavelet_cond=True, **config['flow']).to(args.device)
-        
-        train_flow(model_2, model, config['train'], dataset, args.device, foldername=foldername, log_dir=log_dir)
+        train_flow(model, config['train'], dataset, args.device, foldername=foldername, log_dir=log_dir)
         
     # DRNN
     elif (args.exp_name == "DRNN"):

@@ -182,91 +182,6 @@ class Attention(nn.Module):
         return self.to_out(out)
 
 
-class DAPPM(nn.Module):
-    
-    """ following @ydhongHIT 's Deep Aggregation Pyramid Pooling Module(DAPPM) """
-    """ https://github.com/ydhongHIT/DDRNet/blob/main/segmentation/DDRNet_23.py#L94 """
-    """ parameters set by EDDM: A Novel ECG Denoising Method Using Dual-Path Diffusion Model"""
-    def __init__(self, inplanes, branch_planes, outplanes, bn_mom=0.1):
-        super(DAPPM, self).__init__()
-        self.scale1 = nn.Sequential(nn.AvgPool1d(kernel_size=3, stride=2, padding=1),
-                                    nn.BatchNorm1d(inplanes, momentum=bn_mom),
-                                    nn.ReLU(inplace=True),
-                                    nn.Conv1d(inplanes, branch_planes, kernel_size=1, bias=False),
-                                    )
-        self.scale2 = nn.Sequential(nn.AvgPool1d(kernel_size=5, stride=4, padding=2),
-                                    nn.BatchNorm1d(inplanes, momentum=bn_mom),
-                                    nn.ReLU(inplace=True),
-                                    nn.Conv1d(inplanes, branch_planes, kernel_size=1, bias=False),
-                                    )
-        self.scale3 = nn.Sequential(nn.AvgPool1d(kernel_size=9, stride=8, padding=4),
-                                    nn.BatchNorm1d(inplanes, momentum=bn_mom),
-                                    nn.ReLU(inplace=True),
-                                    nn.Conv1d(inplanes, branch_planes, kernel_size=1, bias=False),
-                                    )
-        self.scale4 = nn.Sequential(nn.AdaptiveAvgPool1d(1),
-                                    # nn.BatchNorm1d(inplanes, momentum=bn_mom),
-                                    nn.ReLU(inplace=True),
-                                    nn.Conv1d(inplanes, branch_planes, kernel_size=1, bias=False),
-                                    )
-        self.scale0 = nn.Sequential(
-                                    nn.BatchNorm1d(inplanes, momentum=bn_mom),
-                                    nn.ReLU(inplace=True),
-                                    nn.Conv1d(inplanes, branch_planes, kernel_size=1, bias=False),
-                                    )
-        self.process1 = nn.Sequential(
-                                    nn.BatchNorm1d(branch_planes, momentum=bn_mom),
-                                    nn.ReLU(inplace=True),
-                                    nn.Conv1d(branch_planes, branch_planes, kernel_size=3, padding=1, bias=False),
-                                    )
-        self.process2 = nn.Sequential(
-                                    nn.BatchNorm1d(branch_planes, momentum=bn_mom),
-                                    nn.ReLU(inplace=True),
-                                    nn.Conv1d(branch_planes, branch_planes, kernel_size=3, padding=1, bias=False),
-                                    )
-        self.process3 = nn.Sequential(
-                                    nn.BatchNorm1d(branch_planes, momentum=bn_mom),
-                                    nn.ReLU(inplace=True),
-                                    nn.Conv1d(branch_planes, branch_planes, kernel_size=3, padding=1, bias=False),
-                                    )
-        self.process4 = nn.Sequential(
-                                    nn.BatchNorm1d(branch_planes, momentum=bn_mom),
-                                    nn.ReLU(inplace=True),
-                                    nn.Conv1d(branch_planes, branch_planes, kernel_size=3, padding=1, bias=False),
-                                    )        
-        self.compression = nn.Sequential(
-                                    nn.BatchNorm1d(branch_planes * 5, momentum=bn_mom),
-                                    nn.ReLU(inplace=True),
-                                    nn.Conv1d(branch_planes * 5, outplanes, kernel_size=1, bias=False),
-                                    )
-        self.shortcut = nn.Sequential(
-                                    nn.BatchNorm1d(inplanes, momentum=bn_mom),
-                                    nn.ReLU(inplace=True),
-                                    nn.Conv1d(inplanes, outplanes, kernel_size=1, bias=False),
-                                    )
-
-    def forward(self, x):
-        length = x.shape[-1]
-        x_list = []
-
-        x_list.append(self.scale0(x))
-        x_list.append(self.process1((F.interpolate(self.scale1(x),
-                        size=length, 
-                        mode='linear') + x_list[0])))
-        x_list.append((self.process2((F.interpolate(self.scale2(x),
-                        size=length,
-                        mode='linear') + x_list[1]))))
-        x_list.append(self.process3((F.interpolate(self.scale3(x),
-                        size=length,
-                        mode='linear') + x_list[2])))
-        x_list.append(self.process4((F.interpolate(self.scale4(x),
-                        size=length,
-                        mode='linear') + x_list[3])))
-       
-        out = self.compression(torch.cat(x_list, 1)) + self.shortcut(x)
-        return out
-
-
 class Unet(nn.Module):
     def __init__(
         self,
@@ -275,13 +190,14 @@ class Unet(nn.Module):
         out_dim=None,
         dim_mults=(1, 2, 4, 8),
         channels=1,
+        z_channels=1,
+        condition=False,
         self_condition=False,
         resnet_block_groups=8,
         learned_variance=False,
         learned_sinusoidal_cond=False,
         random_fourier_features=False,
-        learned_sinusoidal_dim=16,
-        condition=False
+        learned_sinusoidal_dim=16
     ):
         super().__init__()
 
@@ -290,9 +206,9 @@ class Unet(nn.Module):
         self.channels = channels
         self.self_condition = self_condition
         self.condition = condition
-        input_channels = channels + channels * \
-            (1 if self_condition else 0) + channels * \
-            (1 if condition else 0)
+        input_channels = channels + \
+                        channels * (1 if self_condition else 0) + \
+                        z_channels * (1 if condition else 0)
 
         init_dim = default(init_dim, dim)
         self.init_conv = nn.Conv1d(input_channels, init_dim, 7, padding=3)
@@ -333,8 +249,9 @@ class Unet(nn.Module):
             is_first = ind == 0
 
             self.downs.append(nn.ModuleList([
-                Downsample(dim_in, dim_in) if not is_first else nn.Identity(),
-                block_klass(dim_in, dim_out, time_emb_dim=time_dim)
+                Downsample(dim_in, dim_out) if not is_first else nn.Identity(),
+                block_klass(dim_out, dim_out, time_emb_dim=time_dim),
+                block_klass(dim_out, dim_out, time_emb_dim=time_dim)
             ]))
 
         mid_dim = dims[-1]
@@ -346,50 +263,62 @@ class Unet(nn.Module):
             is_last = ind == (num_resolutions - 1)
 
             self.ups.append(nn.ModuleList([
-                block_klass(dim_out + dim_out, dim_in, time_emb_dim=time_dim),
-                block_klass(dim_in, dim_in, time_emb_dim=time_dim) if not is_last else None,
-                Upsample(dim_in, dim_in) if not is_last else nn.Identity(),
+                block_klass(dim_out * 2, dim_out, time_emb_dim=time_dim),
+                block_klass(dim_out * 2, dim_out, time_emb_dim=time_dim),
+                Upsample(dim_out, dim_in) if not is_last else nn.Identity(),
             ]))
 
         default_out_dim = channels * (1 if not learned_variance else 2)
         self.out_dim = default(out_dim, default_out_dim)
-
-        self.dapp = DAPPM(dim, dim * 2, dim)
+        
         self.final_res_block = block_klass(dim * 2, dim, time_emb_dim=time_dim)
         self.final_conv = nn.Conv1d(dim, self.out_dim, 1)
 
-    def forward(self, x, time, x_self_cond=None):
+    def forward(self, x, t=None, z_cond=None, x_self_cond=None):
+        if self.condition:
+            if z_cond is not None:
+                if z_cond.shape[-1] != x.shape[-1]:
+                    z_cond = F.upsample_nearest(z_cond, scale_factor=x.shape[-1] // z_cond.shape[-1])
+            else:
+                z_cond = torch.zeros_like(x)
+            x = torch.cat((x, z_cond), dim=1)
+            
         if self.self_condition:
             x_self_cond = default(x_self_cond, lambda: torch.zeros_like(x[:, :1, :]))
             x = torch.cat((x_self_cond, x), dim=1)
 
         x = self.init_conv(x)
-        s = x.clone()
+        skips = [x]
 
-        t = self.time_mlp(time)
+        if t is None:
+            t = torch.zeros(x.shape[0], device=x.device, dtype=x.dtype)
+        t = self.time_mlp(t)
 
-        h = []
-
-        for downsample, downblock in self.downs:
+        for downsample, downblock1, downblock2 in self.downs:
             x = downsample(x)
 
-            x = downblock(x)
-            h.append(x)
+            x = downblock1(x)
+            skips.append(x)
+            
+            x = downblock2(x)
+            skips.append(x)
 
         x = self.mid_block1(x, t)
         x = self.mid_attn(x)
         x = self.mid_block2(x, t)
 
         for upblock1, upblock2, upsample in self.ups:
-            x = torch.cat((x, h.pop()), dim=1)
+            x = torch.cat((x, skips.pop()), dim=1)
             x = upblock1(x, t)
-            x = upblock2(x, t) if upblock2 is not None else x
+            
+            x = torch.cat((x, skips.pop()), dim=1)
+            x = upblock2(x, t)
 
             x = upsample(x)
 
-        x = torch.cat((x, self.dapp(s)), dim=1)
-
+        x = torch.cat((x, skips.pop()), dim=1)
         x = self.final_res_block(x, t)
+        
         return self.final_conv(x)
 
 
