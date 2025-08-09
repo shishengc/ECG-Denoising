@@ -20,15 +20,15 @@ base_model:
   channels: 1
   z_channels: 1
   condition: true
-  self_condition: false
+  self_condition: true
 
 flow:
   sigma_max: 1.0
-  sigma_min: 1e-5
+  sigma_min: 1.0e-5
   odeint_kwargs:
     method: "euler"
   num_channels: 1
-  sampling_timesteps: 5
+  sampling_timesteps: 2
   default_use_ode: false
 
 test:

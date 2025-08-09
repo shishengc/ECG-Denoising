@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import random
 from typing import Callable
 
@@ -8,7 +7,6 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from torchdiffeq import odeint
-from .utils import default, exists
 
 
 class CFM(nn.Module):
@@ -76,7 +74,7 @@ class CFM(nn.Module):
         use_ode: bool | None = None
     ):
         use_ode = self.default_use_ode if use_ode is None else use_ode
-        steps = default(steps, self.sampling_timesteps)
+        steps = self.sampling_timesteps if steps is None else steps
 
         condition = condition.to(next(self.parameters()).dtype)
         z_cond = self.autoencoder.encode(condition)
@@ -138,6 +136,8 @@ class CFM(nn.Module):
         
         with torch.no_grad():
             z_cond = self.autoencoder.encode(input)
+            if random.random() < 0.1:
+                self_cond += 0.15 * torch.randn_like(self_cond)
 
         time = torch.rand((batch,), dtype=dtype, device=self.device)
         t = time.unsqueeze(-1).unsqueeze(-1)

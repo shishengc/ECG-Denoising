@@ -117,7 +117,7 @@ def evaluate_model(args):
                 from generation_filters.ECGAN import Generator
                 model = Generator(input_channels=config['generator']['feats']).to(args.device)
 
-            model_path = foldername + "/model_4_v0.pth"
+            model_path = foldername + "/model.pth"
             model.load_state_dict(torch.load(model_path, map_location=args.device, weights_only=True))
             model.eval()
 

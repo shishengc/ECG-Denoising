@@ -79,7 +79,7 @@ if __name__ == "__main__":
         
         base_model = Unet(**config['base_model']).to(args.device)
         autoencoder = AttentionSkipDAE2()
-        autoencoder.load_state_dict(torch.load('./check_points/CBAM_DAE/noise_type_1/model.pth', map_location=args.device))
+        autoencoder.load_state_dict(torch.load(f'./check_points/CBAM_DAE/noise_type_{args.n_type}/model.pth', map_location=args.device))
         autoencoder.eval()
         for p in autoencoder.parameters():
             p.requires_grad = False
