@@ -6,7 +6,15 @@ from torch import einsum
 from functools import partial
 import math
 from einops import rearrange, reduce
-from .utils import exists, default
+# from .utils import exists, default
+def exists(x):
+    return x is not None
+
+
+def default(val, d):
+    if exists(val):
+        return val
+    return d() if callable(d) else d
 
 
 class Residual(nn.Module):
@@ -70,6 +78,46 @@ class PreNorm(nn.Module):
         return self.fn(x)
 
 # sinusoidal positional embeds
+
+class TimestepEmbedder(nn.Module):
+    """
+    https://github.com/YuchuanTian/DiC/blob/bfa541b5e3a968919f3a399fc0e223e877439b3b/dic_models.py#L118
+    Embeds scalar timesteps into vector representations.
+    """
+    def __init__(self, hidden_size, frequency_embedding_size=256):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(frequency_embedding_size, hidden_size,bias=True),
+            nn.SiLU(),
+            nn.Linear(hidden_size, hidden_size, bias=True),
+        )
+        self.frequency_embedding_size = frequency_embedding_size
+
+    @staticmethod
+    def timestep_embedding(t, dim, max_period=10000):
+        """
+        Create sinusoidal timestep embeddings.
+        :param t: a 1-D Tensor of N indices, one per batch element.
+                          These may be fractional.
+        :param dim: the dimension of the output.
+        :param max_period: controls the minimum frequency of the embeddings.
+        :return: an (N, D) Tensor of positional embeddings.
+        """
+        # https://github.com/openai/glide-text2im/blob/main/glide_text2im/nn.py
+        half = dim // 2
+        freqs = torch.exp(
+            -math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half
+        ).to(device=t.device)
+        args = t[:, None].float() * freqs[None]
+        embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+        if dim % 2:
+            embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
+        return embedding
+
+    def forward(self, t):
+        t_freq = self.timestep_embedding(t, self.frequency_embedding_size)
+        t_emb = self.mlp(t_freq)
+        return t_emb
 
 
 class SinusoidalPosEmb(nn.Module):
@@ -182,6 +230,82 @@ class Attention(nn.Module):
         return self.to_out(out)
 
 
+class ConditonEmbedder(nn.Module):
+    def __init__(self, hidden_size, cond_dim=16):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(cond_dim, hidden_size,bias=True),
+            nn.SiLU(),
+            nn.Linear(hidden_size, hidden_size, bias=True),
+        )
+
+    def forward(self, cond):
+        if cond is None:
+            return None
+        return self.mlp(cond.squeeze(1))
+
+
+class AffineBlock(nn.Module):
+    def __init__(self, dim, dim_out, cond_emb_dim=None, affinef=3, groups=8):
+        super().__init__()
+        self.conv1 = nn.Conv1d(dim, dim_out, 3, padding=1)
+        self.conv2 = nn.Conv1d(dim_out, dim_out, 3, padding=1)
+        
+        self.affinef = affinef
+        self.affine = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(cond_emb_dim, dim_out * self.affinef, bias=True)
+        )
+        
+        self.norm1 = nn.GroupNorm(groups, dim)
+        self.norm2 = nn.GroupNorm(groups, dim_out)
+        self.act = nn.SiLU()
+        
+        self.res_conv = nn.Conv1d(
+            dim, dim_out, 1) if dim != dim_out else nn.Identity()
+        
+    def modulate(self, x, scale, shift):
+        return x * (scale.unsqueeze(-1) + 1) + shift.unsqueeze(-1)
+
+    def forward(self, x, cond_emb=None):
+        h = self.conv1(self.act(self.norm1(x)))
+        
+        params = self.affine(cond_emb)
+        if self.affinef == 2:
+            scale, shift = params.chunk(2, dim=1)
+            gate = 1
+        elif self.affinef == 3:
+            gate, scale, shift = params.chunk(3, dim=1)
+        h = self.modulate(self.norm2(h), scale, shift)
+        
+        h = self.conv2(self.act(h))
+        
+        return h * gate.unsqueeze(-1) + self.res_conv(x)
+
+
+class FinalLayer(nn.Module):
+    def __init__(self, dim, out_dim):
+        super().__init__()
+        self.norm = LayerNorm(dim)
+        self.proj = nn.Conv1d(dim, dim, 3, padding=1)
+        self.out_conv = nn.Conv1d(dim, out_dim, 3, padding=1)
+        self.affine = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(dim, dim * 2, bias=True)
+        )
+    
+    def modulate(self, x, scale, shift):
+        return x * (scale.unsqueeze(-1) + 1) + shift.unsqueeze(-1)
+    
+    def forward(self, x, cond_emb=None):
+        x = self.proj(x)
+        if exists(cond_emb):
+            params = self.affine(cond_emb)
+            scale, shift = params.chunk(2, dim=1)
+            x = self.modulate(self.norm(x), scale, shift)
+        return self.out_conv(x)
+
+
 class Unet(nn.Module):
     def __init__(
         self,
@@ -278,7 +402,7 @@ class Unet(nn.Module):
         if self.condition:
             if z_cond is not None:
                 if z_cond.shape[-1] != x.shape[-1]:
-                    z_cond = F.upsample_nearest(z_cond, scale_factor=x.shape[-1] // z_cond.shape[-1])
+                    z_cond = nn.functional.interpolate(z_cond, scale_factor=x.shape[-1] // z_cond.shape[-1], mode='nearest')
             else:
                 z_cond = torch.zeros_like(x)
             x = torch.cat((x, z_cond), dim=1)
@@ -297,10 +421,10 @@ class Unet(nn.Module):
         for downsample, downblock1, downblock2 in self.downs:
             x = downsample(x)
 
-            x = downblock1(x)
+            x = downblock1(x, t)
             skips.append(x)
             
-            x = downblock2(x)
+            x = downblock2(x, t)
             skips.append(x)
 
         x = self.mid_block1(x, t)
@@ -322,3 +446,146 @@ class Unet(nn.Module):
         return self.final_conv(x)
 
 
+
+class AdaUNet(nn.Module):
+    def __init__(
+        self,
+        dim,
+        init_dim=None,
+        out_dim=None,
+        dim_mults=(1, 2, 4, 8),
+        channels=1,
+        cond_dim=16,
+        condition=False,
+        self_condition=False,
+        resnet_block_groups=8,
+        affinef=3,
+    ):
+        super().__init__()
+
+        # determine dimensions
+
+        self.channels = channels
+        self.self_condition = self_condition
+        self.condition = condition
+        self.cond_dim = cond_dim
+        input_channels = channels + channels * (1 if self_condition else 0)
+
+        init_dim = default(init_dim, dim)
+        self.init_conv = nn.Conv1d(input_channels, init_dim, 7, padding=3)
+        
+        self.out_dim = default(out_dim, channels)
+
+        self.levels = len(dim_mults)
+        dims = [init_dim, *map(lambda m: dim * m, dim_mults)]
+        in_out = list(zip(dims[:-1], dims[1:]))
+
+        basic_block = partial(AffineBlock, groups=resnet_block_groups, affinef=affinef)
+
+        # Embedding Layers for Timesteps and Conditional Embeddings
+        self.time_embedder = nn.ModuleList([TimestepEmbedder(dim*mult) for mult in dim_mults])
+        self.cond_embedder = nn.ModuleList([ConditonEmbedder(dim*mult) for mult in dim_mults])
+        
+        # Encoder and Decoder Layers
+        self.downs = nn.ModuleList([])
+        self.ups = nn.ModuleList([])
+        num_resolutions = len(in_out)
+
+        for ind, (dim_in, dim_out) in enumerate(in_out):
+            is_first = ind == 0
+
+            self.downs.append(nn.ModuleList([
+                Downsample(dim_in, dim_out) if not is_first else nn.Identity(),
+                basic_block(dim_out, dim_out, cond_emb_dim=dim_out),
+                basic_block(dim_out, dim_out, cond_emb_dim=dim_out)
+            ]))
+
+        mid_dim = dims[-1]
+        self.mid_block1 = basic_block(mid_dim, mid_dim, cond_emb_dim=mid_dim)
+        self.mid_attn = Residual(PreNorm(mid_dim, Attention(mid_dim)))
+        self.mid_block2 = basic_block(mid_dim, mid_dim, cond_emb_dim=mid_dim)
+
+        for ind, (dim_in, dim_out) in enumerate(reversed(in_out)):
+            is_last = ind == (num_resolutions - 1)
+
+            self.ups.append(nn.ModuleList([
+                basic_block(dim_out * 2, dim_out, cond_emb_dim=dim_out),
+                basic_block(dim_out * 2, dim_out, cond_emb_dim=dim_out),
+                Upsample(dim_out, dim_in) if not is_last else nn.Identity(),
+            ]))
+        
+        self.final_layer = FinalLayer(dim, self.out_dim)
+        
+        self.initialize_weights()
+        
+    def initialize_weights(self):
+        def _basic_init(module):
+            if isinstance(module, nn.Linear) or isinstance(module, nn.Conv1d):
+                torch.nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0)
+        self.apply(_basic_init)
+        
+        # Initialize the time and conditional embedding layers
+        for t_embedder in self.time_embedder:
+            nn.init.normal_(t_embedder.mlp[0].weight, std=0.02)
+            nn.init.normal_(t_embedder.mlp[2].weight, std=0.02)
+            
+        for c_embedder in self.cond_embedder:
+            nn.init.normal_(c_embedder.mlp[0].weight, std=0.02)
+            nn.init.normal_(c_embedder.mlp[2].weight, std=0.02)
+            
+        # Zero-out the final output layer
+        nn.init.constant_(self.final_layer.affine[-1].weight, 0)
+        nn.init.constant_(self.final_layer.affine[-1].bias, 0)
+        nn.init.constant_(self.final_layer.out_conv.weight, 0)
+        nn.init.constant_(self.final_layer.out_conv.bias, 0)
+
+    def forward(self, x, t=None, z_cond=None, x_self_cond=None):
+        if self.condition:
+            if t is None:
+                t = torch.zeros(x.shape[0], device=x.device, dtype=x.dtype)
+            if z_cond is None:
+                z_cond = torch.zeros(x.shape[0], self.channels, self.cond_dim, device=x.device, dtype=x.dtype)
+            cond_ls = []
+            for i in range(self.levels):
+                t_emb = self.time_embedder[i](t)
+                c_emb = self.cond_embedder[i](z_cond)
+                cond_ls.append(t_emb + c_emb)
+            
+            cond_ls = cond_ls + cond_ls[::-1] + [cond_ls[0]]
+            
+        if self.self_condition:
+            x_self_cond = default(x_self_cond, lambda: torch.zeros_like(x[:, :1, :]))
+            x = torch.cat((x_self_cond, x), dim=1)
+
+        x = self.init_conv(x)
+        skips = []
+        c_index = 0
+
+        for downsample, downblock1, downblock2 in self.downs:
+            x = downsample(x)
+
+            x = downblock1(x, cond_ls[c_index])
+            skips.append(x)
+            
+            x = downblock2(x, cond_ls[c_index])
+            skips.append(x)
+            c_index += 1
+
+        x = self.mid_block1(x, cond_ls[c_index])
+        x = self.mid_attn(x)
+        x = self.mid_block2(x, cond_ls[c_index])
+
+        for upblock1, upblock2, upsample in self.ups:
+            x = torch.cat((x, skips.pop()), dim=1)
+            x = upblock1(x, cond_ls[c_index])
+            
+            x = torch.cat((x, skips.pop()), dim=1)
+            x = upblock2(x, cond_ls[c_index])
+
+            x = upsample(x)
+            c_index += 1
+        
+        return self.final_layer(x, cond_ls[c_index])
+    
