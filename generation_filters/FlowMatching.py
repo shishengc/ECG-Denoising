@@ -37,16 +37,6 @@ class CFM(nn.Module):
     @property
     def device(self):
         return next(self.parameters()).device
-
-    def loss_weight(self, t: torch.Tensor) -> torch.Tensor:
-        """
-        Calculate the loss weight based on the cosine function.
-        The weight is positive and decreases as t approaches 1.
-        """
-        if self.loss_type == "adaptive":
-            return torch.pow(torch.cos(torch.pi / 2 * (t - 3)), self.sigma).to(self.device)
-        elif self.loss_type == "mean":
-            return torch.ones_like(t).to(self.device)
     
     # Get the psi as Backbone's input
     def get_psi(self, t: torch.Tensor, x0: torch.Tensor, x1: torch.Tensor) -> torch.Tensor:
@@ -83,7 +73,8 @@ class CFM(nn.Module):
             nonlocal z_cond, self_cond
             return self.base_model(x=x, t=t.expand(x.shape[0]), z_cond=z_cond, x_self_cond=self_cond)
         
-        y0 = torch.randn_like(condition)
+        # y0 = torch.randn_like(condition)
+        y0 = condition
 
         t_start = 0
         t = torch.linspace(t_start, 1, steps + 1, device=self.device, dtype=condition.dtype)
@@ -132,7 +123,8 @@ class CFM(nn.Module):
         batch, _, dtype = *input.shape[:2], input.dtype
 
         x1 = clean
-        x0 = torch.randn_like(x1)
+        # x0 = torch.randn_like(x1)
+        x0 = input
         
         with torch.no_grad():
             z_cond = self.autoencoder.encode(input)
@@ -149,8 +141,6 @@ class CFM(nn.Module):
         )
 
         loss = F.mse_loss(pred, flow, reduction="none")
-
-        # loss = loss.mean(dim=(1,2)) * self.loss_weight(t=time)
 
         return loss.mean(), pred
     
