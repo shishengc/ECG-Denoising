@@ -6,15 +6,7 @@ from torch import einsum
 from functools import partial
 import math
 from einops import rearrange, reduce
-# from .utils import exists, default
-def exists(x):
-    return x is not None
-
-
-def default(val, d):
-    if exists(val):
-        return val
-    return d() if callable(d) else d
+from .utils import exists, default
 
 
 class Residual(nn.Module):
@@ -364,7 +356,7 @@ class Unet(nn.Module):
         )
 
         # layers
-
+        self.init_norm = LayerNorm(self.channels)
         self.downs = nn.ModuleList([])
         self.ups = nn.ModuleList([])
         num_resolutions = len(in_out)
@@ -375,7 +367,6 @@ class Unet(nn.Module):
             self.downs.append(nn.ModuleList([
                 Downsample(dim_in, dim_out) if not is_first else nn.Identity(),
                 block_klass(dim_out, dim_out, time_emb_dim=time_dim),
-                block_klass(dim_out, dim_out, time_emb_dim=time_dim)
             ]))
 
         mid_dim = dims[-1]
@@ -388,7 +379,6 @@ class Unet(nn.Module):
 
             self.ups.append(nn.ModuleList([
                 block_klass(dim_out * 2, dim_out, time_emb_dim=time_dim),
-                block_klass(dim_out * 2, dim_out, time_emb_dim=time_dim),
                 Upsample(dim_out, dim_in) if not is_last else nn.Identity(),
             ]))
 
@@ -399,10 +389,11 @@ class Unet(nn.Module):
         self.final_conv = nn.Conv1d(dim, self.out_dim, 1)
 
     def forward(self, x, t=None, z_cond=None, x_self_cond=None):
+        x = self.init_norm(x)
         if self.condition:
             if z_cond is not None:
                 if z_cond.shape[-1] != x.shape[-1]:
-                    z_cond = nn.functional.interpolate(z_cond, scale_factor=x.shape[-1] // z_cond.shape[-1], mode='nearest')
+                    z_cond = nn.functional.interpolate(z_cond, scale_factor=float(x.shape[-1] // z_cond.shape[-1]), mode='nearest')
             else:
                 z_cond = torch.zeros_like(x)
             x = torch.cat((x, z_cond), dim=1)
@@ -418,26 +409,20 @@ class Unet(nn.Module):
             t = torch.zeros(x.shape[0], device=x.device, dtype=x.dtype)
         t = self.time_mlp(t)
 
-        for downsample, downblock1, downblock2 in self.downs:
+        for downsample, downblock1 in self.downs:
             x = downsample(x)
 
             x = downblock1(x, t)
-            skips.append(x)
-            
-            x = downblock2(x, t)
             skips.append(x)
 
         x = self.mid_block1(x, t)
         x = self.mid_attn(x)
         x = self.mid_block2(x, t)
 
-        for upblock1, upblock2, upsample in self.ups:
+        for upblock1, upsample in self.ups:
             x = torch.cat((x, skips.pop()), dim=1)
             x = upblock1(x, t)
             
-            x = torch.cat((x, skips.pop()), dim=1)
-            x = upblock2(x, t)
-
             x = upsample(x)
 
         x = torch.cat((x, skips.pop()), dim=1)
@@ -483,10 +468,11 @@ class AdaUNet(nn.Module):
         basic_block = partial(AffineBlock, groups=resnet_block_groups, affinef=affinef)
 
         # Embedding Layers for Timesteps and Conditional Embeddings
-        self.time_embedder = nn.ModuleList([TimestepEmbedder(dim*mult) for mult in dim_mults])
-        self.cond_embedder = nn.ModuleList([ConditonEmbedder(dim*mult) for mult in dim_mults])
+        self.time_embedder = nn.ModuleList([TimestepEmbedder(dim*mult) for mult in dim_mults] + [TimestepEmbedder(dims[-1])])
+        self.cond_embedder = nn.ModuleList([ConditonEmbedder(dim*mult) for mult in dim_mults] + [ConditonEmbedder(dims[-1])])
         
         # Encoder and Decoder Layers
+        self.init_norm = LayerNorm(self.channels)
         self.downs = nn.ModuleList([])
         self.ups = nn.ModuleList([])
         num_resolutions = len(in_out)
@@ -497,7 +483,6 @@ class AdaUNet(nn.Module):
             self.downs.append(nn.ModuleList([
                 Downsample(dim_in, dim_out) if not is_first else nn.Identity(),
                 basic_block(dim_out, dim_out, cond_emb_dim=dim_out),
-                basic_block(dim_out, dim_out, cond_emb_dim=dim_out)
             ]))
 
         mid_dim = dims[-1]
@@ -509,7 +494,6 @@ class AdaUNet(nn.Module):
             is_last = ind == (num_resolutions - 1)
 
             self.ups.append(nn.ModuleList([
-                basic_block(dim_out * 2, dim_out, cond_emb_dim=dim_out),
                 basic_block(dim_out * 2, dim_out, cond_emb_dim=dim_out),
                 Upsample(dim_out, dim_in) if not is_last else nn.Identity(),
             ]))
@@ -542,18 +526,19 @@ class AdaUNet(nn.Module):
         nn.init.constant_(self.final_layer.out_conv.bias, 0)
 
     def forward(self, x, t=None, z_cond=None, x_self_cond=None):
+        x = self.init_norm(x)
         if self.condition:
             if t is None:
                 t = torch.zeros(x.shape[0], device=x.device, dtype=x.dtype)
             if z_cond is None:
                 z_cond = torch.zeros(x.shape[0], self.channels, self.cond_dim, device=x.device, dtype=x.dtype)
             cond_ls = []
-            for i in range(self.levels):
+            for i in range(self.levels + 1):
                 t_emb = self.time_embedder[i](t)
                 c_emb = self.cond_embedder[i](z_cond)
                 cond_ls.append(t_emb + c_emb)
             
-            cond_ls = cond_ls + cond_ls[::-1] + [cond_ls[0]]
+            cond_ls = cond_ls + cond_ls[:-1][::-1] + [cond_ls[0]]
             
         if self.self_condition:
             x_self_cond = default(x_self_cond, lambda: torch.zeros_like(x[:, :1, :]))
@@ -563,26 +548,22 @@ class AdaUNet(nn.Module):
         skips = []
         c_index = 0
 
-        for downsample, downblock1, downblock2 in self.downs:
+        for downsample, downblock1 in self.downs:
             x = downsample(x)
 
             x = downblock1(x, cond_ls[c_index])
             skips.append(x)
-            
-            x = downblock2(x, cond_ls[c_index])
-            skips.append(x)
+
             c_index += 1
 
         x = self.mid_block1(x, cond_ls[c_index])
         x = self.mid_attn(x)
         x = self.mid_block2(x, cond_ls[c_index])
+        c_index += 1
 
-        for upblock1, upblock2, upsample in self.ups:
+        for upblock1, upsample in self.ups:
             x = torch.cat((x, skips.pop()), dim=1)
             x = upblock1(x, cond_ls[c_index])
-            
-            x = torch.cat((x, skips.pop()), dim=1)
-            x = upblock2(x, cond_ls[c_index])
 
             x = upsample(x)
             c_index += 1

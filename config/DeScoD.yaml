@@ -26,4 +26,4 @@ diffusion:
   schedule: "quad"
 
 test:
-  batch_size: 50
+  batch_size: 64

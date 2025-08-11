@@ -1,6 +1,6 @@
 train:
   epochs: 500
-  val_interval: 5
+  val_interval: 1
   batch_size: 64
 
   optimizer:
@@ -34,4 +34,4 @@ model:
   num_transformer_layers: 6
 
 test:
-  batch_size: 32
+  batch_size: 64
