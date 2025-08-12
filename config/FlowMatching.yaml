@@ -19,7 +19,7 @@ base_model:
   out_dim: 1
   channels: 1
   z_channels: 1
-  condition: true
+  condition: false
   self_condition: true
 
 flow:

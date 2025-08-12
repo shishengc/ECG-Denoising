@@ -67,14 +67,13 @@ class CFM(nn.Module):
         steps = self.sampling_timesteps if steps is None else steps
 
         condition = condition.to(next(self.parameters()).dtype)
-        z_cond = self.autoencoder.encode(condition)
+        z_cond = self.autoencoder(condition)
 
         def fn(t, x):
             nonlocal z_cond, self_cond
             return self.base_model(x=x, t=t.expand(x.shape[0]), z_cond=z_cond, x_self_cond=self_cond)
         
-        # y0 = torch.randn_like(condition)
-        y0 = condition
+        y0 = torch.randn_like(condition) + z_cond
 
         t_start = 0
         t = torch.linspace(t_start, 1, steps + 1, device=self.device, dtype=condition.dtype)
@@ -123,13 +122,13 @@ class CFM(nn.Module):
         batch, _, dtype = *input.shape[:2], input.dtype
 
         x1 = clean
-        # x0 = torch.randn_like(x1)
-        x0 = input
+        x0 = torch.randn_like(x1)
         
         with torch.no_grad():
-            z_cond = self.autoencoder.encode(input)
+            x0 += self.autoencoder(input)
+            z_cond = self.autoencoder(input)
             if random.random() < 0.1:
-                self_cond += 0.15 * torch.randn_like(self_cond)
+                self_cond += 0.1 * torch.randn_like(self_cond)
 
         time = torch.rand((batch,), dtype=dtype, device=self.device)
         t = time.unsqueeze(-1).unsqueeze(-1)

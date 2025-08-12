@@ -74,15 +74,15 @@ if __name__ == "__main__":
     # FlowMatching
     if (args.exp_name == "FlowMatching"):
         from generation_filters.FlowBackbone import Unet
-        from dl_filters.CBAM_DAE import AttentionSkipDAE2
+        from dl_filters.SemiAE import SemiAE
         from generation_filters.FlowMatching import CFM
         
         base_model = Unet(**config['base_model']).to(args.device)
-        autoencoder = AttentionSkipDAE2()
-        autoencoder.load_state_dict(torch.load(f'./check_points/CBAM_DAE/noise_type_{args.n_type}/model.pth', map_location=args.device))
-        autoencoder.eval()
-        for p in autoencoder.parameters():
-            p.requires_grad = False
+        
+        encoder_path = f"./check_points/SemiAE/noise_type_" + str(args.n_type) + "/" + "model.pth"
+        model_ae = SemiAE()
+        model_ae.load_state_dict(torch.load(encoder_path, weights_only=True, map_location=args.device))
+        autoencoder = model_ae._make_ae
 
         model = CFM(base_model=base_model, autoencoder=autoencoder, **config['flow']).to(args.device)
         
