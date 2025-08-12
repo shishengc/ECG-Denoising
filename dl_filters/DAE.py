@@ -65,7 +65,7 @@ class CBAM(nn.Module):
         return x
 
 class ConvCBAM(nn.Module):
-    def __init__(self, signal_size, channels, input_chanel=None, kernel_size=3):
+    def __init__(self, signal_size, channels, input_chanel=None, kernel_size=3, dwonsample=True):
         super(ConvCBAM, self).__init__()
         self.conv0 = nn.Conv1d(
             input_chanel if input_chanel else channels,
@@ -93,7 +93,7 @@ class ConvCBAM(nn.Module):
             (signal_size, 1),
             False
         )
-        self.maxpool = nn.MaxPool1d(kernel_size=2, stride=2)
+        self.maxpool = nn.MaxPool1d(kernel_size=2, stride=2) if dwonsample else nn.Identity()
         
     def forward(self, x):
         x = self.conv0(x)
@@ -108,7 +108,7 @@ class ConvCBAM(nn.Module):
         return x
     
 class DeConvCBAM(nn.Module):
-    def __init__(self, signal_size, channels, input_chanel=None, kernel_size=3):
+    def __init__(self, signal_size, channels, input_chanel=None, kernel_size=3, upsample=True):
         super(DeConvCBAM, self).__init__()
         self.conv0 = nn.ConvTranspose1d(
             input_chanel if input_chanel else channels,
@@ -117,6 +117,11 @@ class DeConvCBAM(nn.Module):
             stride=2,
             padding=kernel_size//2,
             output_padding=1
+        ) if upsample else nn.ConvTranspose1d(
+            input_chanel if input_chanel else channels,
+            channels,
+            kernel_size,
+            padding=kernel_size//2
         )
         self.conv1 = nn.ConvTranspose1d(
             channels,
@@ -155,28 +160,24 @@ class DeConvCBAM(nn.Module):
 class AttentionDAE(nn.Module):    
     def __init__(self, signal_size=512, filters=16):
         super(AttentionDAE, self).__init__()
-        self.b1 = ConvCBAM(signal_size, filters, 1)
-        self.b2 = ConvCBAM(signal_size//2, filters*2, filters)
-        self.b3 = ConvCBAM(signal_size//4, filters*4, filters*2)
-        self.b4 = ConvCBAM(signal_size//8, filters*4, filters*4)
-        self.b5 = ConvCBAM(signal_size//16, 1, filters*4)
-        self.d5 = DeConvCBAM(signal_size//16, filters*4, 1)
-        self.d4 = DeConvCBAM(signal_size//8, filters*4, filters*4)
+        self.b1 = ConvCBAM(signal_size, filters, 1, dwonsample=False)
+        self.b2 = ConvCBAM(signal_size, filters*2, filters)
+        self.b3 = ConvCBAM(signal_size//2, filters*4, filters*2)
+        self.b4 = ConvCBAM(signal_size//4, filters*8, filters*4)
+        self.d4 = DeConvCBAM(signal_size//8, filters*4, filters*8)
         self.d3 = DeConvCBAM(signal_size//4, filters*2, filters*4)
         self.d2 = DeConvCBAM(signal_size//2, filters, filters*2)
-        self.d1 = DeConvCBAM(signal_size, 1, filters)
+        self.d1 = DeConvCBAM(signal_size, 1, filters, upsample=False)
         
     def encode(self, x):
         encoded = self.b1(x)
         encoded = self.b2(encoded)
         encoded = self.b3(encoded)
         encoded = self.b4(encoded)
-        encoded = self.b5(encoded)
         return encoded
     
     def decode(self, x):
-        decoded = self.d5(x)
-        decoded = self.d4(decoded)
+        decoded = self.d4(x)
         decoded = self.d3(decoded)
         decoded = self.d2(decoded)
         decoded = self.d1(decoded)
@@ -187,9 +188,7 @@ class AttentionDAE(nn.Module):
         enc2 = self.b2(enc1)
         enc3 = self.b3(enc2)
         enc4 = self.b4(enc3)
-        enc5 = self.b5(enc4)
-        dec5 = self.d5(enc5)
-        dec4 = self.d4(dec5)
+        dec4 = self.d4(enc4)
         dec3 = self.d3(dec4)
         dec2 = self.d2(dec3)
         dec1 = self.d1(dec2)

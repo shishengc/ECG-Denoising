@@ -424,7 +424,7 @@ class ECGDataset(Dataset):
         train_val_set = TensorDataset(self.y_train, self.X_train)
         test_set = TensorDataset(self.y_test, self.X_test)
         
-        train_idx, val_idx = train_test_split(list(range(len(train_val_set))), test_size=0.3)
+        train_idx, val_idx = train_test_split(list(range(len(train_val_set))), test_size=0.3, random_state=42)
         train_set = Subset(train_val_set, train_idx)
         val_set = Subset(train_val_set, val_idx)
         
@@ -535,3 +535,93 @@ class Ada_ECGDataset(ECGDataset):
         
         train_set = Subset(self, self.train_idx)
         return DataLoader(train_set, batch_size=batch_size, shuffle=True, drop_last=True)
+
+
+class EMGDataset(Dataset):
+    def __init__(self, config=None, augment=False):
+        self.refresh = False
+        self.augment = augment
+        self.config = config
+        self._prepare_data()
+        
+    def _prepare_data(self):
+        print('Getting the EMG Data ready with noise augmentation ... ')
+        
+        config_path = Path("./config") / "data_prepare.yaml"
+        with open(config_path, "r") as f:
+            data_config = yaml.safe_load(f)
+        
+        seed = 1234
+        np.random.seed(seed=seed)
+        
+        with open(data_config['nstdb_path'], 'rb') as input:
+            nstdb = pickle.load(input)
+        
+        [bw_signals, _, _] = nstdb
+        bw_signals = np.array(bw_signals)
+        bw_noise = bw_signals[:, 0]
+        
+        from load_openset import load_SimEMG_Train
+        X_train, y_train = load_SimEMG_Train()
+        X_train, y_train = X_train.transpose(0, 2, 1), y_train.transpose(0, 2, 1)            
+        samples = X_train.shape[2]
+        
+        X_augmented = []
+        y_augmented = []
+        
+        noise_index = 0
+        for i in range(len(X_train)):
+            clean_signal = y_train[i, 0, :]
+
+            for i in range(3):
+                snr_db = np.random.randint(-6, 7)
+                if i > 0:
+                    while(snr_db==last_snr_db):
+                        snr_db = np.random.randint(-6, 7)
+                else:
+                    last_snr_db = snr_db
+                snr_linear = 10**(snr_db / 10.0)
+
+                noise = bw_noise[noise_index:noise_index + samples]
+                if len(noise) < samples:
+                    noise_index = 0
+                    noise = bw_noise[noise_index:noise_index + samples]
+                signal_power = np.mean(clean_signal**2)
+                noise_power = np.mean(noise**2)
+                
+                if noise_power > 0:
+                    noise_scaling = np.sqrt(signal_power / (snr_linear * noise_power))
+                    scaled_noise = noise * noise_scaling
+                else:
+                    scaled_noise = noise
+                noisy_signal = clean_signal + scaled_noise
+
+                y_augmented.append(clean_signal)
+                X_augmented.append(noisy_signal)
+
+                noise_index += samples
+                if noise_index > (len(bw_noise) - samples):
+                    noise_index = 0
+
+        X_augmented = np.array(X_augmented)
+        y_augmented = np.array(y_augmented)
+
+        X_augmented = np.expand_dims(X_augmented, axis=1)
+        y_augmented = np.expand_dims(y_augmented, axis=1)
+
+        self.X_train = torch.FloatTensor(X_augmented)
+        self.y_train = torch.FloatTensor(y_augmented)
+        
+        print(f'EMG Dataset ready with {len(self.X_train)} samples (original + augmented)')
+        
+    def _get_loader(self):
+        train_val_set = TensorDataset(self.y_train, self.X_train)
+        
+        train_idx, val_idx = train_test_split(list(range(len(train_val_set))), test_size=0.3, random_state=42)
+        train_set = Subset(train_val_set, train_idx)
+        val_set = Subset(train_val_set, val_idx)
+        
+        train_loader = DataLoader(train_set, batch_size=self.config['train']['batch_size'], shuffle=True, drop_last=True)
+        val_loader = DataLoader(val_set, batch_size=self.config['train']['batch_size'])
+        
+        return train_loader, val_loader, val_loader

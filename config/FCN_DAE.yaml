@@ -1,6 +1,6 @@
 train:
   epochs: 500
-  val_interval: 5
+  val_interval: 1
   batch_size: 128
   optimizer:
     type: "Adam"

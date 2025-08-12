@@ -2,7 +2,6 @@ train:
   epochs: 500
   val_interval: 1
   batch_size: 128
-
   optimizer:
     type: "Adam"
     lr: 0.001
@@ -24,11 +23,8 @@ train:
     patience: 10
     verbose: true
 
-  criterion: "CombinedSSDMADLoss"
-
 model:
-  signal_size: 512
-  filters: 16
+  in_channels: 1
 
 test:
   batch_size: 64

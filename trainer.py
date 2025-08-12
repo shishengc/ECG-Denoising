@@ -473,7 +473,6 @@ def train_eddm(model, config, dataset, device, foldername="", log_dir=None):
             torch.save(model.state_dict(), final_path)
     
 
-
 def train_flow(model, config, dataset, device, foldername="", log_dir=None):
     from ema_pytorch import EMA
     
@@ -585,3 +584,102 @@ def train_flow(model, config, dataset, device, foldername="", log_dir=None):
         else:
             torch.save(model.state_dict(), final_path)
       
+      
+def train_ae(model, config, dataset, device, foldername="", log_dir=None):
+
+    # optimizer config
+    optimizer_config = config['optimizer']
+    optimizer_type = getattr(optim, optimizer_config.get("type", "Adam"))
+    optimizer = optimizer_type(model.parameters(), **{k: v for k, v in optimizer_config.items() if k not in ['type']})
+    
+    # criterion config
+    criterion = SSDLoss()
+    
+    if foldername != "":
+        output_path = foldername + "/model.pth"
+    
+    # lr_scheduler config
+    if config['lr_scheduler'].get("use", False):
+        lr_scheduler = LRScheduler(config.get('lr_scheduler', {}))
+    else:
+        lr_scheduler = None
+        
+    # Early stopping config
+    if config['early_stopping'].get("use", False):
+        early_stopping = EarlyStopping(config.get('early_stopping', {}))
+    else:
+        early_stopping = None
+    
+    best_valid_loss = 1e15
+    writer = SummaryWriter(log_dir=log_dir)
+    
+    # Get train and validation loaders
+    train_loader, valid_loader, _ = dataset._get_loader()
+    
+    # training loop
+    for epoch_no in range(config["epochs"]):
+        avg_loss = 0
+        model.train()
+        
+        with tqdm(train_loader) as it:
+            for batch_no, (clean_batch, noisy_batch) in enumerate(it, start=1):
+                clean_batch, noisy_batch = clean_batch.to(device), noisy_batch.to(device)
+                optimizer.zero_grad()
+                
+                loss = model.get_loss(clean_batch, noisy_batch)
+                loss.backward()
+                optimizer.step()
+                
+                avg_loss += loss.item()                
+                it.set_postfix(
+                    ordered_dict={
+                        "avg_epoch_loss": f"{avg_loss / batch_no:.4f}",
+                        "epoch": epoch_no,
+                    },
+                    refresh=True,
+                )
+            if lr_scheduler is not None and config['lr_scheduler']['type'] != "ReduceLROnPlateau":
+                lr_scheduler.step()
+        
+        # Log training metrics
+        writer.add_scalar('Loss/Train', avg_loss / batch_no, epoch_no)
+            
+        if (epoch_no + 1) % config['val_interval'] == 0:
+            model.eval()
+            avg_loss_valid = 0
+            
+            with torch.no_grad():
+                with tqdm(valid_loader) as it:
+                    for batch_no, (clean_batch, noisy_batch) in enumerate(it, start=1):
+                        clean_batch, noisy_batch = clean_batch.to(device), noisy_batch.to(device)
+                        denoised_batch = model(noisy_batch)
+                        
+                        loss = criterion(denoised_batch, clean_batch)
+            
+                        avg_loss_valid += loss.item()
+                        
+                        it.set_postfix(
+                            ordered_dict={
+                                "valid_avg_epoch_loss": f"{avg_loss_valid / batch_no:.4f}",
+                                "epoch": epoch_no,
+                            },
+                            refresh=True,
+                        )
+            
+            # Log validation metrics
+            writer.add_scalar('Loss/Validation', avg_loss_valid / batch_no, epoch_no)
+      
+            if config['lr_scheduler']['type'] == "ReduceLROnPlateau":
+                lr_scheduler.step(avg_loss_valid / batch_no)
+            
+            if best_valid_loss > avg_loss_valid/batch_no:
+                best_valid_loss = avg_loss_valid/batch_no
+                print("\n best loss is updated to ",f"{avg_loss_valid / batch_no:.4f}","at Epoch", epoch_no+1)
+                
+                if foldername != "":
+                    torch.save(model.state_dict(), output_path)
+                    
+            if early_stopping is not None:
+                if early_stopping.step(avg_loss_valid/batch_no):
+                    print(f"\nEarly stopping triggered after {epoch_no+1} epochs!")
+                    break

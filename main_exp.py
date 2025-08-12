@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 from data_preparation import ECGDataset, Ada_ECGDataset
-from trainer import train_diffusion, train_gan, train_dl, train_eddm, train_flow
+from trainer import train_diffusion, train_gan, train_dl, train_eddm, train_flow, train_ae
 
 if __name__ == "__main__": 
     parser = argparse.ArgumentParser(description="ECG Denoising")
@@ -138,4 +138,11 @@ if __name__ == "__main__":
         discriminator = Discriminator(input_channels=config['discriminator']['feats']).to(args.device)
         
         train_gan(generator, discriminator, config['train'], dataset, args.device, foldername=foldername, log_dir=log_dir)
+        
+    # SemiAE
+    elif (args.exp_name == "SemiAE"):
+        from dl_filters.SemiAE import SemiAE
+        model = SemiAE(**config['model']).to(args.device)
+        
+        train_ae(model, config['train'], dataset, args.device, foldername=foldername, log_dir=log_dir)
     
