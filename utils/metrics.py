@@ -2,16 +2,16 @@ import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 
 def SSD(y, y_pred):
-    return np.sum(np.square(y - y_pred), axis=1)  # axis 1 is the signal dimension
+    return np.sum(np.square(y - y_pred), axis=-1)
 
 
 def MAD(y, y_pred):
-    return np.max(np.abs(y - y_pred), axis=1) # axis 1 is the signal dimension
+    return np.max(np.abs(y - y_pred), axis=-1)
 
 
 def PRD(y, y_pred):
-    N = np.sum(np.square(y_pred - y), axis=1)
-    D = np.sum(np.square(y_pred - np.mean(y)), axis=1)
+    N = np.sum(np.square(y_pred - y), axis=-1)
+    D = np.sum(np.square(y_pred - np.mean(y)), axis=-1)
 
     PRD = np.sqrt(N/D) * 100
 
@@ -31,8 +31,8 @@ def COS_SIM(y, y_pred):
 
     
 def SNR(y1,y2):
-    N = np.sum(np.square(y1), axis=1)
-    D = np.sum(np.square(y2 - y1), axis=1)
+    N = np.sum(np.square(y1), axis=-1)
+    D = np.sum(np.square(y2 - y1), axis=-1)
     
     SNR = 10*np.log10(N/D)
     

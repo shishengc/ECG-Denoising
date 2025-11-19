@@ -2,14 +2,7 @@
 /Data
 /logs
 /.vscode
-/DeepFilter
-/Score_based_ECG_Denoising
 /check_points
 /results
 /figures
 test.ipynb
-/SimEMG_LowSNR_Paired_Processed
-/afib_processed_output
-
-load_openset.py
-openset_test.py

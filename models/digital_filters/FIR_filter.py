@@ -110,7 +110,8 @@ def FIR_test_Dataset(Dataset, num_processes=None):
 
     # Determine number of processes to use
     if num_processes is None:
-        num_processes = mp.cpu_count()
+        # num_processes = mp.cpu_count()
+        num_processes = 2
     
     # Create partial function with fixed parameters
     process_func = partial(process_single_signal, Fs=Fs, Fc_l=Fc_l, Fc_h=Fc_h)

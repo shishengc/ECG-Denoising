@@ -48,14 +48,15 @@ class WeightStandardizedConv1d(nn.Conv1d):
 
 
 class LayerNorm(nn.Module):
-    def __init__(self, dim):
+    def __init__(self, dim, axis=1):
         super().__init__()
         self.g = nn.Parameter(torch.ones(1, dim, 1))
+        self.axis = axis
 
     def forward(self, x):
         eps = 1e-5 if x.dtype == torch.float32 else 1e-3
-        var = torch.var(x, dim=1, unbiased=False, keepdim=True)
-        mean = torch.mean(x, dim=1, keepdim=True)
+        var = torch.var(x, dim=self.axis, unbiased=False, keepdim=True)
+        mean = torch.mean(x, dim=self.axis, keepdim=True)
         return (x - mean) * (var + eps).rsqrt() * self.g
 
 
@@ -193,7 +194,7 @@ class ResnetBlock(nn.Module):
         h = self.block2(h)
 
         return h + self.res_conv(x)
-
+    
 
 class Attention(nn.Module):
     def __init__(self, dim, heads=6, dim_head=64):
@@ -220,6 +221,22 @@ class Attention(nn.Module):
         out = rearrange(out, 'b h l d -> b (h d) l')
         
         return self.to_out(out)
+    
+    def get_attention(self, x):
+        b, c, l = x.shape
+        qkv = self.to_qkv(x).chunk(3, dim=1)
+        q, k, v = map(lambda t: rearrange(
+            t, 'b (h c) l -> b h c l', h=self.heads), qkv)
+
+        q = q * self.scale
+
+        sim = einsum('b h d i, b h d j -> b h i j', q, k)
+        attn = sim.softmax(dim=-1)
+        out = einsum('b h i j, b h d j -> b h i d', attn, v)
+
+        out = rearrange(out, 'b h l d -> b (h d) l')
+        
+        return attn
 
 
 class Unet(nn.Module):
@@ -247,11 +264,11 @@ class Unet(nn.Module):
         self.self_condition = self_condition
         self.condition = condition
         input_channels = channels + \
-                        channels * (1 if self_condition else 0) + \
-                        z_channels * (1 if condition else 0)
-
+                        z_channels * (1 if condition else 0) + \
+                        channels * (1 if self_condition else 0)
         init_dim = default(init_dim, dim)
         self.init_conv = nn.Conv1d(input_channels, init_dim, 7, padding=3)
+        self.init_norm = LayerNorm(channels, axis=2)
 
         dims = [init_dim, *map(lambda m: dim * m, dim_mults)]
         in_out = list(zip(dims[:-1], dims[1:]))
@@ -280,7 +297,6 @@ class Unet(nn.Module):
         )
 
         # layers
-        self.init_norm = LayerNorm(self.channels)
         self.downs = nn.ModuleList([])
         self.ups = nn.ModuleList([])
         num_resolutions = len(in_out)
@@ -291,9 +307,11 @@ class Unet(nn.Module):
             self.downs.append(nn.ModuleList([
                 Downsample(dim_in, dim_out) if not is_first else nn.Identity(),
                 block_klass(dim_out, dim_out, time_emb_dim=time_dim),
+                block_klass(dim_out, dim_out, time_emb_dim=time_dim),
             ]))
 
         mid_dim = dims[-1]
+        
         self.mid_block1 = block_klass(mid_dim, mid_dim, time_emb_dim=time_dim)
         self.mid_attn = Residual(PreNorm(mid_dim, Attention(mid_dim)))
         self.mid_block2 = block_klass(mid_dim, mid_dim, time_emb_dim=time_dim)
@@ -303,6 +321,7 @@ class Unet(nn.Module):
 
             self.ups.append(nn.ModuleList([
                 block_klass(dim_out * 2, dim_out, time_emb_dim=time_dim),
+                block_klass(dim_out, dim_out, time_emb_dim=time_dim),
                 Upsample(dim_out, dim_in) if not is_last else nn.Identity(),
             ]))
 
@@ -312,40 +331,38 @@ class Unet(nn.Module):
         self.final_res_block = block_klass(dim * 2, dim, time_emb_dim=time_dim)
         self.final_conv = nn.Conv1d(dim, self.out_dim, 1)
 
-    def forward(self, x, t=None, z_cond=None, x_self_cond=None):
-        x = self.init_norm(x)
+    def forward(self, x, t=None, z_cond=None, x_self_cond=None):        
         if self.condition:
-            if z_cond is not None:
-                if z_cond.shape[-1] != x.shape[-1]:
-                    z_cond = nn.functional.interpolate(z_cond, scale_factor=float(x.shape[-1] // z_cond.shape[-1]), mode='nearest')
-            else:
-                z_cond = torch.zeros_like(x)
+            if z_cond is None:
+                z_cond = torch.zeros_like(x)    
             x = torch.cat((x, z_cond), dim=1)
-   
-        if self.self_condition:
-            x_self_cond = default(x_self_cond, lambda: torch.zeros_like(x[:, :1, :]))
-            x = torch.cat((x_self_cond, x), dim=1)
+            
+        x = torch.cat((x, x_self_cond), dim=1) if self.self_condition else x
 
         x = self.init_conv(x)
-        skips = [x]
+        skips = [x.clone()]
 
         if t is None:
             t = torch.zeros(x.shape[0], device=x.device, dtype=x.dtype)
         t = self.time_mlp(t)
 
-        for downsample, downblock1 in self.downs:
+        for downsample, downblock1, downblock2 in self.downs:
             x = downsample(x)
 
             x = downblock1(x, t)
-            skips.append(x)
-
+            x = downblock2(x, t)
+            skips.append(x.clone())
+        
         x = self.mid_block1(x, t)
         x = self.mid_attn(x)
         x = self.mid_block2(x, t)
 
-        for upblock1, upsample in self.ups:
-            x = torch.cat((x, skips.pop()), dim=1)
+        for idx, (upblock1, upblock2, upsample) in enumerate(self.ups):
+            skip = skips.pop()
+            x = torch.cat((skip, x), dim=1)
+
             x = upblock1(x, t)
+            x = upblock2(x, t)
             
             x = upsample(x)
 

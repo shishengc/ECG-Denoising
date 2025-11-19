@@ -2,24 +2,23 @@
 #type: args
 
 train:
-  steps: 30000
-  batch_size: 128
+  steps: 50000
+  batch_size: 256
   gradient_accumulate_every: 1
-  val_interval: 1000
+  val_interval: 200
   condition: true
   use_ema: true
 
   optimizer:
     type: "AdamW"
     lr: 9.0e-5
-    weight_decay: 0.
 
 base_model:
   dim: 64
   out_dim: 1
   channels: 1
   z_channels: 1
-  condition: false
+  condition: true
   self_condition: true
 
 flow:
@@ -28,7 +27,7 @@ flow:
   odeint_kwargs:
     method: "euler"
   num_channels: 1
-  sampling_timesteps: 2
+  sampling_timesteps: 10
   default_use_ode: false
 
 test:

@@ -4,16 +4,17 @@ import datetime
 import yaml
 import os
 from pathlib import Path
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="torch._utils")
 
-from data_preparation import ECGDataset, Ada_ECGDataset
-from trainer import train_diffusion, train_gan, train_dl, train_eddm, train_flow, train_ae
+from datasets.dataset import ECGDataset, EMGDataset
 
 if __name__ == "__main__": 
     parser = argparse.ArgumentParser(description="ECG Denoising")
     parser.add_argument("--exp_name", type=str, choices=[
         "DeScoD",
         "EDDM",
-        "FlowMatching",
+        "ARiRGen",
         "DRNN",
         "FCN_DAE",
         "ACDAE",
@@ -21,12 +22,12 @@ if __name__ == "__main__":
         "TCDAE",
         "DeepFilter",
         "ECG_GAN",
-        ""
-    ], default="FlowMatching", help="Experiment name")
+        "AR"
+    ], default="ARiRGen", help="Experiment name")
     parser.add_argument('--device', default='cuda:0' if torch.cuda.is_available() else 'cpu', help='Device')
-    parser.add_argument('--use_rmn', type=bool, default=True, help='Add Random Mixed Noise')
+    parser.add_argument('--train_set', type=str, default='QT', choices=['QT', 'SimEMG'], help='Dataset to use for training')
+    parser.add_argument('--use_rmn', action='store_true', default=True, help='Add Random Mixed Noise')
     parser.add_argument('--n_type', type=int, default=1, help='noise version')
-    parser.add_argument('--adaboost', type=bool, default=False)
 
     args = parser.parse_args()
     
@@ -34,7 +35,7 @@ if __name__ == "__main__":
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
     
-    foldername = f"./check_points/{args.exp_name}/noise_type_" + str(args.n_type) + "/"
+    foldername = f"./check_points/{args.train_set}/{args.exp_name}/noise_type_" + str(args.n_type) + "/"
     print('check_points_folder:', foldername)
     os.makedirs(foldername, exist_ok=True)
     
@@ -44,10 +45,13 @@ if __name__ == "__main__":
     os.makedirs(log_dir, exist_ok=True)
     
     # Load Data
-    if args.adaboost:
-        dataset = Ada_ECGDataset(n_type=args.n_type, use_rmn=args.use_rmn, config=config)
-    else:
-        dataset = ECGDataset(n_type=args.n_type, use_rmn=args.use_rmn, config=config)
+    if args.train_set == 'QT':
+        if args.exp_name == 'FlowMatching' :
+            dataset = ECGDataset(n_type=args.n_type, use_rmn=args.use_rmn, use_snr=True, config=config)
+        else:
+            dataset = ECGDataset(n_type=args.n_type, use_rmn=args.use_rmn, config=config)
+    elif args.train_set == 'SimEMG':
+        dataset = EMGDataset(n_type=args.n_type, config=config, train=True)
 
     print('Data ready to use.')
     
@@ -55,8 +59,9 @@ if __name__ == "__main__":
     print('Loading model...')
     # DeScoD-ECG
     if (args.exp_name == "DeScoD"):
-        from generation_filters.DeScoD_model import ConditionalModel
-        from generation_filters.DeScoD_diffusion import DDPM
+        from models.generation_filters.DeScoD_model import ConditionalModel
+        from models.generation_filters.DeScoD_diffusion import DDPM
+        from trainer import train_diffusion
         
         base_model = ConditionalModel(config['train']['feats']).to(args.device)
         model = DDPM(base_model, config, args.device)
@@ -64,25 +69,26 @@ if __name__ == "__main__":
         
     # EDDM
     if (args.exp_name == "EDDM"):
-        from generation_filters.EDDM_model import UnetRes
-        from generation_filters.EDDM_diffusion import ResidualDiffusion
+        from models.generation_filters.EDDM_model import UnetRes
+        from models.generation_filters.EDDM_diffusion import ResidualDiffusion
+        from trainer import train_eddm
         
         base_model = UnetRes(**config['base_model']).to(args.device)
         model = ResidualDiffusion(model=base_model, **config['diffusion']).to(args.device)
         train_eddm(model, config['train'], dataset, args.device, foldername=foldername, log_dir=log_dir)
 
-    # FlowMatching
-    if (args.exp_name == "FlowMatching"):
-        from generation_filters.FlowBackbone import Unet
-        from dl_filters.SemiAE import SemiAE
-        from generation_filters.FlowMatching import CFM
+    # ARiR-Gen
+    if (args.exp_name == "ARiRGen"):
+        from models.generation_filters.FlowBackbone import Unet
+        from models.generation_filters.FlowMatching import CFM
+        from models.dl_filters.AR import AR
+        from trainer import train_flow
         
         base_model = Unet(**config['base_model']).to(args.device)
-        
-        encoder_path = f"./check_points/SemiAE/noise_type_" + str(args.n_type) + "/" + "model.pth"
-        model_ae = SemiAE()
-        model_ae.load_state_dict(torch.load(encoder_path, weights_only=True, map_location=args.device))
-        autoencoder = model_ae._make_ae
+
+        encoder_path = f"./check_points/{args.train_set}/AR/noise_type_" + str(args.n_type) + "/" + "model.pth"
+        autoencoder = AR().to(args.device)
+        autoencoder.load_state_dict(torch.load(encoder_path, map_location=args.device))
 
         model = CFM(base_model=base_model, autoencoder=autoencoder, **config['flow']).to(args.device)
         
@@ -90,59 +96,73 @@ if __name__ == "__main__":
         
     # DRNN
     elif (args.exp_name == "DRNN"):
-        from dl_filters.DRNN import DRDNN
+        from models.dl_filters.DRNN import DRDNN
+        from trainer import train_dl
+        
         model = DRDNN(**config['model']).to(args.device)
         
         train_dl(model, config['train'], dataset, args.device, foldername=foldername, log_dir=log_dir)
         
     # FCN_DAE
     elif (args.exp_name == "FCN_DAE"):
-        from dl_filters.FCN_DAE import FCN_DAE
+        from models.dl_filters.FCN_DAE import FCN_DAE
+        from trainer import train_dl
+        
         model = FCN_DAE(**config['model']).to(args.device)
         
         train_dl(model, config['train'], dataset, args.device, foldername=foldername, log_dir=log_dir)
 
     # ACDAE
     elif (args.exp_name == "ACDAE"):
-        from dl_filters.ACDAE import ACDAE
+        from models.dl_filters.ACDAE import ACDAE
+        from trainer import train_dl
+        
         model = ACDAE(**config['model']).to(args.device)
         
         train_dl(model, config['train'], dataset, args.device, foldername=foldername, log_dir=log_dir)
         
     # CBAM_DAE
     elif (args.exp_name == "CBAM_DAE"):
-        from dl_filters.CBAM_DAE import AttentionSkipDAE2
+        from models.dl_filters.CBAM_DAE import AttentionSkipDAE2
+        from trainer import train_dl
+        
         model = AttentionSkipDAE2(**config['model']).to(args.device)
         
         train_dl(model, config['train'], dataset, args.device, foldername=foldername, log_dir=log_dir)
         
     # TCDAE
     elif (args.exp_name == "TCDAE"):
-        from dl_filters.TCDAE import TCDAE
+        from models.dl_filters.TCDAE import TCDAE
+        from trainer import train_dl
+        
         model = TCDAE(**config['model']).to(args.device)
         
         train_dl(model, config['train'], dataset, args.device, foldername=foldername, log_dir=log_dir)
         
     # DeepFilter
     elif (args.exp_name == "DeepFilter"):
-        from dl_filters.DeepFilter import DeepFilterModelLANLDilated
+        from models.dl_filters.DeepFilter import DeepFilterModelLANLDilated
+        from trainer import train_dl
+        
         model = DeepFilterModelLANLDilated().to(args.device)
         
         train_dl(model, config['train'], dataset, args.device, foldername=foldername, log_dir=log_dir)
         
     # ECG_GAN
     elif (args.exp_name == "ECG_GAN"):
-        from generation_filters.ECGAN import Generator, Discriminator
+        from models.generation_filters.ECGAN import Generator, Discriminator 
+        from trainer import train_gan
 
         generator = Generator(input_channels=config['generator']['feats']).to(args.device)
         discriminator = Discriminator(input_channels=config['discriminator']['feats']).to(args.device)
         
         train_gan(generator, discriminator, config['train'], dataset, args.device, foldername=foldername, log_dir=log_dir)
-        
-    # SemiAE
-    elif (args.exp_name == "SemiAE"):
-        from dl_filters.SemiAE import SemiAE
-        model = SemiAE(**config['model']).to(args.device)
-        
-        train_ae(model, config['train'], dataset, args.device, foldername=foldername, log_dir=log_dir)
     
+    # AR 
+    elif (args.exp_name == "AR"):
+        from models.dl_filters.AR import AR
+        from trainer import train_ar
+        
+        model = AR().to(args.device)
+        
+        train_ar(model, config['train'], dataset, args.device, foldername=foldername, log_dir=log_dir)

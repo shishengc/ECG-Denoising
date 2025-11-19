@@ -1,16 +1,16 @@
 train:
-  epochs: 500
+  epochs: 200
   val_interval: 1
   batch_size: 128
   optimizer:
     type: "Adam"
-    lr: 0.001
+    lr: 1.0e-3
 
   lr_scheduler:
     use: true
     type: "ReduceLROnPlateau"
     factor: 0.5
-    min_delta: 0.05
+    min_delta: 0.01
     mode: "min"
     patience: 2
     min_lr: 1e-10
@@ -18,13 +18,12 @@ train:
 
   early_stopping:
     use: true
-    min_delta: 0.05
+    min_delta: 0.01
     mode: "min"
     patience: 10
     verbose: true
 
-model:
-  in_channels: 1
+  criterion: "SSDLoss"
 
 test:
   batch_size: 64

@@ -27,6 +27,9 @@ class CFM(nn.Module):
 
         self.base_model = base_model
         self.autoencoder = autoencoder
+        for p in self.autoencoder.parameters():
+            p.requires_grad = False
+            
         self.sigma_max = sigma_max
         self.sigma_min = sigma_min
         self.odeint_kwargs = odeint_kwargs
@@ -53,7 +56,6 @@ class CFM(nn.Module):
         assert x0.shape[0] == x1.shape[0]
         return (self.sigma_min / self.sigma_max - 1) * x0 + x1
 
-
     @torch.no_grad()
     def sample(
         self,
@@ -67,13 +69,16 @@ class CFM(nn.Module):
         steps = self.sampling_timesteps if steps is None else steps
 
         condition = condition.to(next(self.parameters()).dtype)
-        z_cond = self.autoencoder(condition)
+        y0 = condition.clone()
+
+        z_cond = self.autoencoder.inference(condition)
 
         def fn(t, x):
             nonlocal z_cond, self_cond
-            return self.base_model(x=x, t=t.expand(x.shape[0]), z_cond=z_cond, x_self_cond=self_cond)
+            velocity = self.base_model(x=x, t=t.expand(x.shape[0]), z_cond=z_cond, x_self_cond=self_cond)
+            return velocity
         
-        y0 = torch.randn_like(condition) + z_cond
+        y0 = y0 - z_cond
 
         t_start = 0
         t = torch.linspace(t_start, 1, steps + 1, device=self.device, dtype=condition.dtype)
@@ -84,9 +89,11 @@ class CFM(nn.Module):
             trajectory = self._iterative_sample(fn, y0, t, steps, condition)
 
         out = trajectory[-1]
+        out = out + z_cond
 
         return out, trajectory
-
+    
+    
     def _iterative_sample(self, fn, y0, t, steps, cond):
         dt = t[1] - t[0]
 
@@ -106,8 +113,26 @@ class CFM(nn.Module):
             trajectory.append(x)
             
         return torch.stack(trajectory)
+    
+    def add_noise(self, x0):
+        B, C, L = x0.shape
+        a = x0.abs()
+        pad_left = torch.zeros(B, C, 8, device=x0.device, dtype=x0.dtype)
+        pad_right = torch.zeros(B, C, 8, device=x0.device, dtype=x0.dtype)
+        padded = torch.cat([pad_left, a, pad_right], dim=-1) 
+        windows = padded.unfold(dimension=-1, size=17, step=1)
+        w = windows.sum(dim=-1).abs()
 
-    def forward(self, input, clean, self_cond=None):
+        w_min = w.amin(dim=-1, keepdim=True)
+        w_max = w.amax(dim=-1, keepdim=True)
+        w_norm = (w - w_min) / (w_max - w_min + 1e-8)
+        norm = 2.0 * w_norm - 1.0
+        scale = 0.1 + 0.05 * norm
+        noise = torch.randn_like(x0)
+        x0 = x0 + scale * noise
+        return x0
+
+    def forward(self, input, clean, self_cond=None, snr=None ,step=0):
         """Flow Matching forward pass
         Args:
             input (torch.Tensor): Noisy ECG signal
@@ -119,27 +144,37 @@ class CFM(nn.Module):
             pred (torch.Tensor): Predicted flow
         """
 
-        batch, _, dtype = *input.shape[:2], input.dtype
+        batch, _, dtype, device = *input.shape[:2], input.dtype, input.device
 
         x1 = clean
-        x0 = torch.randn_like(x1)
+        x0 = input.clone()
         
         with torch.no_grad():
-            x0 += self.autoencoder(input)
-            z_cond = self.autoencoder(input)
-            if random.random() < 0.1:
-                self_cond += 0.1 * torch.randn_like(self_cond)
+            z_cond = self.autoencoder.inference(input)
+            
+            x1 = x1 - z_cond
+            x0 = x0 - z_cond
+            
+            x0 = self.add_noise(x0)
 
-        time = torch.rand((batch,), dtype=dtype, device=self.device)
+        time = torch.rand((batch,), dtype=dtype, device=device)
         t = time.unsqueeze(-1).unsqueeze(-1)
         φ = self.get_psi(t, x0, x1)
         flow = self.get_flow(t, x0, x1)
 
-        pred = self.base_model(
+        pred, _ = self.base_model(
             x=φ, t=time, z_cond=z_cond, x_self_cond=self_cond
         )
 
-        loss = F.mse_loss(pred, flow, reduction="none")
+        if snr is not None:
+            snr_min, snr_max = -7.0, 18.0
+            span = 24.0
+            snr = snr.to(dtype=dtype, device=device)
+            loss_weight = ((snr - snr_min) / span).view(batch, 1)
+        else:
+            loss_weight = torch.ones((batch, 1), dtype=dtype, device=device)
 
-        return loss.mean(), pred
-    
+        pred_loss = F.mse_loss(pred, flow, reduction="none").mean(dim=-1)
+        loss = (pred_loss * loss_weight).mean()
+
+        return loss, pred

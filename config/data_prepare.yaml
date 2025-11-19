@@ -1,4 +1,0 @@
-qt_path: ./Data/prepared/QTDatabase.pkl
-nstdb_path: ./Data/prepared/NoiseBWL.pkl
-
-rnd_test_path: ./Data/prepared/rnd_test.npy
