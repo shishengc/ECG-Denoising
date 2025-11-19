@@ -161,6 +161,25 @@ def dl_evaluate(args, model, noisy_batch):
     return denoised_batch
 
 
+def digitial_evaluate(args, X_test, y_test):
+    if args.exp_name == "FIR":
+        from models.digital_filters.FIR_filter import FIR_test_Dataset
+        [x_input, y_true, y_pred] = FIR_test_Dataset([None, None, X_test, y_test])
+    elif args.exp_name == "IIR":
+        from models.digital_filters.IIR_filter import IIR_test_Dataset
+        [x_input, y_true, y_pred] = IIR_test_Dataset([None, None, X_test, y_test])
+        
+    x_input = x_input.transpose(0, 2, 1)
+    y_true = y_true.transpose(0, 2, 1)
+    y_pred = y_pred.transpose(0, 2, 1)
+
+    results = {
+        'y_pred': y_pred,
+        'y_true': y_true,
+        'x_input': x_input
+    }
+    return results
+
 def evaluate_QT(args):
     if args.train_set == 'SimEMG':
         save_path = f"results/EMG_Train/{args.exp_name}"
@@ -186,22 +205,7 @@ def evaluate_QT(args):
         
         # FIR & IIR filters
         if args.exp_name in ["FIR", "IIR"]:
-            if args.exp_name == "FIR":
-                from models.digital_filters.FIR_filter import FIR_test_Dataset
-                [x_input, y_true, y_pred] = FIR_test_Dataset([None, None, X_test, y_test])
-            elif args.exp_name == "IIR":
-                from models.digital_filters.IIR_filter import IIR_test_Dataset
-                [x_input, y_true, y_pred] = IIR_test_Dataset([None, None, X_test, y_test])
-
-            x_input = x_input.transpose(0, 2, 1)
-            y_true = y_true.transpose(0, 2, 1)
-            y_pred = y_pred.transpose(0, 2, 1)
-
-            results = {
-                'y_pred': y_pred,
-                'y_true': y_true,
-                'x_input': x_input
-            }
+            results = digitial_evaluate(args, X_test, y_test)
             np.save(f"results/{args.dataset}/{args.exp_name}/results_{n_type}.npy", results)
             
         # DL_filters
@@ -324,22 +328,7 @@ def evaluate_SimEMG(args):
         dataset = EMGDataset(n_type=1, config=None, train=True)
         X_test, y_test = np.array(dataset.X_test).transpose(0, 2, 1), np.array(dataset.y_test).transpose(0, 2, 1)
         
-        if args.exp_name == "FIR":
-            from models.digital_filters.FIR_filter import FIR_test_Dataset
-            [x_input, y_true, y_pred] = FIR_test_Dataset([None, None, X_test, y_test])
-        elif args.exp_name == "IIR":
-            from models.digital_filters.IIR_filter import IIR_test_Dataset
-            [x_input, y_true, y_pred] = IIR_test_Dataset([None, None, X_test, y_test])
-
-        x_input = x_input.transpose(0, 2, 1)
-        y_true = y_true.transpose(0, 2, 1)
-        y_pred = y_pred.transpose(0, 2, 1)
-
-        results = {
-            'y_pred': y_pred,
-            'y_true': y_true,
-            'x_input': x_input
-        }
+        results = digitial_evaluate(args, X_test, y_test)
         np.save(f"{save_path}/results_1.npy", results)
 
         metrics = {
@@ -436,19 +425,8 @@ def evaluate_Icentiak11(args):
     X_test, ids = load_Icentiak11()
 
     if args.exp_name in ["FIR", "IIR"]:
-        if args.exp_name == "FIR":
-            from models.digital_filters.FIR_filter import FIR_test_Dataset
-            [X_test, _, y_pred] = FIR_test_Dataset([None, None, X_test, None])
-        elif args.exp_name == "IIR":
-            from models.digital_filters.IIR_filter import IIR_test_Dataset
-            [X_test, _, y_pred] = IIR_test_Dataset([None, None, X_test, None])
-
-        y_pred = y_pred.transpose(0, 2, 1)
-
-        results = {
-            'y_pred': y_pred
-        }
-        np.save(f"results/{args.dataset}/{args.exp_name}/Denoised.npy", results)
+        results = digitial_evaluate(args, X_test, y_test=None)
+        np.save(f"results/{args.dataset}/{args.exp_name}/Denoised.npy", results['y_pred'])
 
     else:
         n_type = 1
@@ -500,13 +478,7 @@ def evaluate_Arrhythmia(args):
     X_test, ids, cnts = load_Arrhythmia()
 
     if args.exp_name in ["FIR", "IIR"]:
-        if args.exp_name == "FIR":
-            from models.digital_filters.FIR_filter import FIR_test_Dataset
-            [X_test, _, y_pred] = FIR_test_Dataset([None, None, X_test, None])
-        elif args.exp_name == "IIR":
-            from models.digital_filters.IIR_filter import IIR_test_Dataset
-            [X_test, _, y_pred] = IIR_test_Dataset([None, None, X_test, None])
-
+        y_pred = digitial_evaluate(args, X_test, y_test=None)['y_pred']
         y_pred = y_pred.transpose(0, 2, 1)
 
         results = {}
@@ -576,18 +548,7 @@ def evaluate_CPSC(args):
     X_test, ids, infos = load_CPSC()
 
     if args.exp_name in ["FIR", "IIR"]:
-        if args.exp_name == "FIR":
-            from models.digital_filters.FIR_filter import FIR_test_Dataset
-            [X_test, _, y_pred] = FIR_test_Dataset([None, None, X_test, None])
-        elif args.exp_name == "IIR":
-            from models.digital_filters.IIR_filter import IIR_test_Dataset
-            [X_test, _, y_pred] = IIR_test_Dataset([None, None, X_test, None])
-
-        y_pred = y_pred.transpose(0, 2, 1)
-
-        results = {
-            'y_pred': y_pred
-        }
+        results = digitial_evaluate(args, X_test, y_test=None)['y_pred'].transpose(0, 2, 1)
         np.save(f"results/{args.dataset}/{args.exp_name}/Denoised.npy", results)
 
     else:
